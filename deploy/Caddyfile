@@ -1,0 +1,8 @@
+# Caddy reverse proxy for oxidize with automatic Tailscale HTTPS.
+# Caddy (2.7+) fetches the cert for the *.ts.net name directly from the local
+# tailscaled, provided tailscaled runs with TS_PERMIT_CERT_UID=caddy so the
+# caddy user is allowed to request certs. No manual cert/renewal needed.
+# See https://tailscale.com/blog/caddy
+oxidize.taild4f4.ts.net {
+	reverse_proxy localhost:8080
+}

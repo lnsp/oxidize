@@ -1,0 +1,21 @@
+# Secrets — never commit the Proxmox API token
+/TOKEN
+*.env
+
+# Build artifacts
+/bin/
+/internal/static/dist/
+/data/
+
+# Vendored / reference checkouts (fetched separately — see README)
+/console/
+/omicron/
+/pve-apiclient/
+
+# Dev artifacts
+/.playwright-mcp/
+/*.png
+
+# Go
+*.test
+*.out
