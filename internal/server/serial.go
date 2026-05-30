@@ -7,9 +7,10 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 
-	"github.com/lennart/oxidize/internal/oxide"
-	"github.com/lennart/oxidize/internal/wsutil"
+	"github.com/lnsp/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/wsutil"
 )
 
 // handleSerialHistory answers GET /v1/instances/{instance}/serial-console with
@@ -44,6 +45,26 @@ func (s *Server) handleSerialStream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer client.Close()
 
+	// Proxmox's serial terminal needs a serial device. Without one, termproxy
+	// still returns a ticket but the terminal process emits "unable to find
+	// serial interface". Add serial0 if missing (effective on next VM start) and
+	// guide the user rather than showing the cryptic Proxmox error.
+	if cfg, cerr := s.pve.QemuConfig(r.Context(), ref.node, ref.vmid); cerr == nil && !hasSerial(cfg) {
+		form := url.Values{}
+		form.Set("serial0", "socket")
+		_, addErr := s.pve.UpdateConfig(r.Context(), ref.node, ref.vmid, form)
+		msg := "\r\nThis VM has no serial console device (serial0).\r\n"
+		if addErr == nil {
+			msg += "A serial port was added for you. Stop and start the VM, then reconnect.\r\n" +
+				"The guest OS must also expose a console on ttyS0 — cloud-init images do\r\n" +
+				"this automatically; VGA-only guests will not produce serial output.\r\n"
+		} else {
+			msg += fmt.Sprintf("Could not add one automatically: %v\r\n", addErr)
+		}
+		writeTerm(client, msg)
+		return
+	}
+
 	// Open a termproxy session on Proxmox.
 	tp, err := s.pve.TermProxy(r.Context(), ref.node, ref.vmid)
 	if err != nil {
@@ -72,6 +93,16 @@ func (s *Server) handleSerialStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bridge(client, upstream)
+}
+
+// hasSerial reports whether a VM config has any serialN device.
+func hasSerial(cfg map[string]string) bool {
+	for k := range cfg {
+		if strings.HasPrefix(k, "serial") && len(k) > 6 {
+			return true
+		}
+	}
+	return false
 }
 
 // bridge pumps bytes in both directions until either side closes.

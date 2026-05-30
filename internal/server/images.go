@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/lennart/oxidize/internal/oxide"
-	"github.com/lennart/oxidize/internal/translate"
+	"github.com/lnsp/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/translate"
 )
 
 // allImages lists ISO and container-template volumes across the cluster,

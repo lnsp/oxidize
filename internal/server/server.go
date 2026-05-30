@@ -7,11 +7,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/lennart/oxidize/internal/config"
-	"github.com/lennart/oxidize/internal/oxide"
-	"github.com/lennart/oxidize/internal/proxmox"
-	"github.com/lennart/oxidize/internal/static"
-	"github.com/lennart/oxidize/internal/store"
+	"github.com/lnsp/oxidize/internal/config"
+	"github.com/lnsp/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/proxmox"
+	"github.com/lnsp/oxidize/internal/static"
+	"github.com/lnsp/oxidize/internal/store"
 )
 
 // Server holds shared dependencies for the HTTP handlers.
@@ -111,6 +111,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/system/silos/{silo}", s.protected(s.handleSiloView))
 	mux.HandleFunc("GET /v1/utilization", s.protected(s.handleUtilization))
 	mux.HandleFunc("GET /v1/system/utilization/silos", s.protected(s.handleSiloUtilizationList))
+
+	// --- System update (read-only: shows the running Proxmox VE version) ---
+	mux.HandleFunc("GET /v1/system/update/status", s.protected(s.handleUpdateStatus))
+	mux.HandleFunc("GET /v1/system/update/repositories", s.protected(s.handleUpdateRepositoryList))
+	mux.HandleFunc("PUT /v1/system/update/target-release", s.protected(s.handleTargetReleaseUpdate))
 
 	// --- Empty stubs for resource pages we don't map yet ---
 	for _, p := range emptyListRoutes {

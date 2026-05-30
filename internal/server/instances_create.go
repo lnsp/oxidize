@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lennart/oxidize/internal/oxide"
-	"github.com/lennart/oxidize/internal/translate"
+	"github.com/lnsp/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/translate"
 )
 
 // instanceCreateBody is the decoded subset of the Oxide InstanceCreate request.

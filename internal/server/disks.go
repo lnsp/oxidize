@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lennart/oxidize/internal/oxide"
-	"github.com/lennart/oxidize/internal/proxmox"
-	"github.com/lennart/oxidize/internal/translate"
+	"github.com/lnsp/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/proxmox"
+	"github.com/lnsp/oxidize/internal/translate"
 )
 
 // disksForVMs builds the attached disks for a set of VMs.

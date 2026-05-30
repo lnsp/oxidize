@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/lennart/oxidize/internal/oxide"
-	"github.com/lennart/oxidize/internal/translate"
+	"github.com/lnsp/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/translate"
 )
 
 // handleSystemMetric answers the legacy provisioned-capacity metrics

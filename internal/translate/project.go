@@ -1,7 +1,7 @@
 package translate
 
 import (
-	"github.com/lennart/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/oxide"
 )
 
 // DefaultProjectName is the project that holds VMs not in any Proxmox pool.

@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lennart/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/oxide"
 )
 
 // Synthetic networking ids. Proxmox has no VPC/subnet concept, so we present a

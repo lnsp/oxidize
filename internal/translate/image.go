@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lennart/oxidize/internal/oxide"
-	"github.com/lennart/oxidize/internal/proxmox"
+	"github.com/lnsp/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/proxmox"
 )
 
 func itoa(n int) string { return strconv.Itoa(n) }

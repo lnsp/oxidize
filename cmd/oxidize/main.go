@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/lennart/oxidize/internal/config"
-	"github.com/lennart/oxidize/internal/proxmox"
-	"github.com/lennart/oxidize/internal/server"
-	"github.com/lennart/oxidize/internal/store"
+	"github.com/lnsp/oxidize/internal/config"
+	"github.com/lnsp/oxidize/internal/proxmox"
+	"github.com/lnsp/oxidize/internal/server"
+	"github.com/lnsp/oxidize/internal/store"
 )
 
 func main() {

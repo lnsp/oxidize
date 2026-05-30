@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lennart/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/oxide"
 )
 
 // diskDevicePrefixes are the QEMU config keys that describe attached disks.

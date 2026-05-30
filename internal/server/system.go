@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/lennart/oxidize/internal/oxide"
-	"github.com/lennart/oxidize/internal/translate"
+	"github.com/lnsp/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/translate"
 )
 
 func syntheticSilo() oxide.Silo {

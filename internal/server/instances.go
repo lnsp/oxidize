@@ -7,9 +7,9 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/lennart/oxidize/internal/oxide"
-	"github.com/lennart/oxidize/internal/proxmox"
-	"github.com/lennart/oxidize/internal/translate"
+	"github.com/lnsp/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/proxmox"
+	"github.com/lnsp/oxidize/internal/translate"
 )
 
 // writeProxmoxError maps an upstream Proxmox error to an Oxide error response.

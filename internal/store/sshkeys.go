@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lennart/oxidize/internal/oxide"
-	"github.com/lennart/oxidize/internal/translate"
+	"github.com/lnsp/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/translate"
 )
 
 // SSHKeyStore persists the synthetic user's SSH keys as a JSON file.

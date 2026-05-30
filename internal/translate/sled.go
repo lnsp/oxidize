@@ -3,8 +3,8 @@ package translate
 import (
 	"strconv"
 
-	"github.com/lennart/oxidize/internal/oxide"
-	"github.com/lennart/oxidize/internal/proxmox"
+	"github.com/lnsp/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/proxmox"
 )
 
 // SledFromNode maps a Proxmox cluster node to an Oxide Sled.

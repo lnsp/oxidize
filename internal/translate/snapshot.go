@@ -4,8 +4,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/lennart/oxidize/internal/oxide"
-	"github.com/lennart/oxidize/internal/proxmox"
+	"github.com/lnsp/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/proxmox"
 )
 
 // DiskPoolVMID is the reserved Proxmox VMID namespace under which oxidize

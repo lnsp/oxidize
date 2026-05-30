@@ -3,8 +3,8 @@ package translate
 import (
 	"testing"
 
-	"github.com/lennart/oxidize/internal/oxide"
-	"github.com/lennart/oxidize/internal/proxmox"
+	"github.com/lnsp/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/proxmox"
 )
 
 func TestRunState(t *testing.T) {

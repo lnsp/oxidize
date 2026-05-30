@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/lennart/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/oxide"
 )
 
 func (s *Server) handleSshKeyList(w http.ResponseWriter, r *http.Request) {

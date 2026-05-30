@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lennart/oxidize/internal/oxide"
-	"github.com/lennart/oxidize/internal/proxmox"
+	"github.com/lnsp/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/proxmox"
 )
 
 // epoch is a stable synthetic creation timestamp. Proxmox doesn't expose a VM

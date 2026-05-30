@@ -3,8 +3,8 @@ package server
 import (
 	"net/http"
 
-	"github.com/lennart/oxidize/internal/oxide"
-	"github.com/lennart/oxidize/internal/translate"
+	"github.com/lnsp/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/translate"
 )
 
 // projects returns the default project plus one per Proxmox resource pool. When
