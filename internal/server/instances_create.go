@@ -161,6 +161,10 @@ func (s *Server) createByClone(ctx context.Context, tmpl *vmRef, vmid int, param
 	}
 	// Apply requested sizing on top of the cloned template.
 	cfg := url.Values{}
+	// Ensure a serial console device so oxidize's (serial-only) console works.
+	// Cloud images already run a getty on ttyS0, so this makes the console work
+	// out of the box even if the source template lacks serial0.
+	cfg.Set("serial0", "socket")
 	if params.NCPUs > 0 {
 		cfg.Set("cores", strconv.Itoa(params.NCPUs))
 	}
