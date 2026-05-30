@@ -86,11 +86,13 @@ func (s *Server) handleSerialStream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer upstream.Close()
 
-	// Proxmox termproxy expects the auth string "<user>:<ticket>\n" first.
+	// Proxmox termproxy expects the auth string "<user>:<ticket>\n" first,
+	// then an initial terminal size as "1:<cols>:<rows>:".
 	if err := upstream.WriteMessage(wsutil.OpBinary, []byte(tp.User+":"+tp.Ticket+"\n")); err != nil {
 		writeTerm(client, "\r\nfailed to authenticate to Proxmox console\r\n")
 		return
 	}
+	_ = upstream.WriteMessage(wsutil.OpBinary, []byte("1:80:24:"))
 
 	bridge(client, upstream)
 }
@@ -105,15 +107,19 @@ func hasSerial(cfg map[string]string) bool {
 	return false
 }
 
-// bridge pumps bytes in both directions until either side closes.
-func bridge(a, b *wsutil.Conn) {
+// bridge connects the browser xterm to the Proxmox terminal. Proxmox sends raw
+// PTY output, but expects INPUT framed as "0:<byte-len>:<data>" (and resizes as
+// "1:<cols>:<rows>:"). The Oxide console speaks raw serial bytes, so we pass
+// Proxmox output straight through and frame the browser's keystrokes.
+func bridge(client, upstream *wsutil.Conn) {
 	done := make(chan struct{}, 2)
-	go pump(a, b, done) // browser -> proxmox
-	go pump(b, a, done) // proxmox -> browser
+	go pumpRaw(upstream, client, done)    // proxmox -> browser (raw)
+	go pumpFramed(client, upstream, done) // browser -> proxmox (framed input)
 	<-done
 }
 
-func pump(src, dst *wsutil.Conn, done chan<- struct{}) {
+// pumpRaw forwards messages unchanged.
+func pumpRaw(src, dst *wsutil.Conn, done chan<- struct{}) {
 	defer func() { done <- struct{}{} }()
 	for {
 		op, data, err := src.ReadMessage()
@@ -122,10 +128,24 @@ func pump(src, dst *wsutil.Conn, done chan<- struct{}) {
 				return
 			}
 		}
-		if err == io.EOF || op == wsutil.OpClose {
+		if err == io.EOF || op == wsutil.OpClose || err != nil {
 			return
 		}
-		if err != nil {
+	}
+}
+
+// pumpFramed wraps each client message in Proxmox's "0:<len>:<data>" input frame.
+func pumpFramed(src, dst *wsutil.Conn, done chan<- struct{}) {
+	defer func() { done <- struct{}{} }()
+	for {
+		op, data, err := src.ReadMessage()
+		if len(data) > 0 {
+			frame := append([]byte(fmt.Sprintf("0:%d:", len(data))), data...)
+			if werr := dst.WriteMessage(wsutil.OpBinary, frame); werr != nil {
+				return
+			}
+		}
+		if err == io.EOF || op == wsutil.OpClose || err != nil {
 			return
 		}
 	}
