@@ -24,6 +24,7 @@ type Server struct {
 	ippools     *store.IPPoolStore
 	subnetpools *store.SubnetPoolStore
 	extsubnets  *store.ExternalSubnetStore
+	affgroups   *store.AffinityGroupStore
 
 	// SDN topology cache (see sdnTopology); guarded by sdnMu.
 	sdnMu     sync.Mutex
@@ -32,8 +33,8 @@ type Server struct {
 }
 
 // New builds a Server.
-func New(cfg config.Config, pve *proxmox.Client, keys *store.SSHKeyStore, fips *store.FloatingIPStore, ippools *store.IPPoolStore, subnetpools *store.SubnetPoolStore, extsubnets *store.ExternalSubnetStore) *Server {
-	return &Server{cfg: cfg, pve: pve, keys: keys, fips: fips, ippools: ippools, subnetpools: subnetpools, extsubnets: extsubnets}
+func New(cfg config.Config, pve *proxmox.Client, keys *store.SSHKeyStore, fips *store.FloatingIPStore, ippools *store.IPPoolStore, subnetpools *store.SubnetPoolStore, extsubnets *store.ExternalSubnetStore, affgroups *store.AffinityGroupStore) *Server {
+	return &Server{cfg: cfg, pve: pve, keys: keys, fips: fips, ippools: ippools, subnetpools: subnetpools, extsubnets: extsubnets, affgroups: affgroups}
 }
 
 // Handler returns the fully wired http.Handler.
@@ -54,7 +55,10 @@ func (s *Server) Handler() http.Handler {
 
 	// --- Projects (single synthetic project) ---
 	mux.HandleFunc("GET /v1/projects", s.protected(s.handleProjectList))
+	mux.HandleFunc("POST /v1/projects", s.protected(s.handleProjectCreate))
 	mux.HandleFunc("GET /v1/projects/{project}", s.protected(s.handleProjectView))
+	mux.HandleFunc("PUT /v1/projects/{project}", s.protected(s.handleProjectUpdate))
+	mux.HandleFunc("DELETE /v1/projects/{project}", s.protected(s.handleProjectDelete))
 
 	// --- Instances ---
 	mux.HandleFunc("GET /v1/instances", s.protected(s.handleInstanceList))
@@ -72,8 +76,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/instances/{instance}/external-ips/ephemeral", s.protected(s.handleInstanceEphemeralAttach))
 	mux.HandleFunc("DELETE /v1/instances/{instance}/external-ips/ephemeral", s.protected(s.handleInstanceEphemeralDetach))
 	mux.HandleFunc("GET /v1/instances/{instance}/ssh-public-keys", s.protected(s.emptyPage))
-	mux.HandleFunc("GET /v1/instances/{instance}/affinity-groups", s.protected(s.emptyPage))
-	mux.HandleFunc("GET /v1/instances/{instance}/anti-affinity-groups", s.protected(s.emptyPage))
+	mux.HandleFunc("GET /v1/instances/{instance}/affinity-groups", s.protected(s.affinityGroups().instanceGroupList))
+	mux.HandleFunc("GET /v1/instances/{instance}/anti-affinity-groups", s.protected(s.antiAffinityGroups().instanceGroupList))
 
 	// --- Network interfaces, VPC, IP pools (mapped/synthetic) ---
 	mux.HandleFunc("GET /v1/network-interfaces", s.protected(s.handleNICList))
@@ -105,6 +109,29 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/external-subnets/{externalSubnet}", s.protected(s.handleExternalSubnetDelete))
 	mux.HandleFunc("POST /v1/external-subnets/{externalSubnet}/attach", s.protected(s.handleExternalSubnetAttach))
 	mux.HandleFunc("POST /v1/external-subnets/{externalSubnet}/detach", s.protected(s.handleExternalSubnetDetach))
+
+	// --- Affinity / anti-affinity groups (oxidize-owned; recorded, not enforced) ---
+	aff := s.affinityGroups()
+	mux.HandleFunc("GET /v1/affinity-groups", s.protected(aff.list))
+	mux.HandleFunc("POST /v1/affinity-groups", s.protected(aff.create))
+	mux.HandleFunc("GET /v1/affinity-groups/{group}", s.protected(aff.view))
+	mux.HandleFunc("PUT /v1/affinity-groups/{group}", s.protected(aff.update))
+	mux.HandleFunc("DELETE /v1/affinity-groups/{group}", s.protected(aff.delete))
+	mux.HandleFunc("GET /v1/affinity-groups/{group}/members", s.protected(aff.memberList))
+	mux.HandleFunc("GET /v1/affinity-groups/{group}/members/instance/{instance}", s.protected(aff.memberView))
+	mux.HandleFunc("POST /v1/affinity-groups/{group}/members/instance/{instance}", s.protected(aff.memberAdd))
+	mux.HandleFunc("DELETE /v1/affinity-groups/{group}/members/instance/{instance}", s.protected(aff.memberDelete))
+
+	anti := s.antiAffinityGroups()
+	mux.HandleFunc("GET /v1/anti-affinity-groups", s.protected(anti.list))
+	mux.HandleFunc("POST /v1/anti-affinity-groups", s.protected(anti.create))
+	mux.HandleFunc("GET /v1/anti-affinity-groups/{group}", s.protected(anti.view))
+	mux.HandleFunc("PUT /v1/anti-affinity-groups/{group}", s.protected(anti.update))
+	mux.HandleFunc("DELETE /v1/anti-affinity-groups/{group}", s.protected(anti.delete))
+	mux.HandleFunc("GET /v1/anti-affinity-groups/{group}/members", s.protected(anti.memberList))
+	mux.HandleFunc("GET /v1/anti-affinity-groups/{group}/members/instance/{instance}", s.protected(anti.memberView))
+	mux.HandleFunc("POST /v1/anti-affinity-groups/{group}/members/instance/{instance}", s.protected(anti.memberAdd))
+	mux.HandleFunc("DELETE /v1/anti-affinity-groups/{group}/members/instance/{instance}", s.protected(anti.memberDelete))
 
 	// --- Internal: floating IP -> instance map polled by the takahe reconciler.
 	// Token-gated (X-Oxidize-Token), not session-protected (no browser session).
@@ -209,8 +236,6 @@ var emptyListRoutes = []string{
 	"/v1/vpc-routers",
 	"/v1/vpc-router-routes",
 	"/v1/internet-gateways",
-	"/v1/affinity-groups",
-	"/v1/anti-affinity-groups",
 	"/v1/system/networking/address-lot",
 	"/v1/system/networking/loopback-address",
 }

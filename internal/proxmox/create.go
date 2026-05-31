@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/url"
 	"strconv"
-	"strings"
 )
 
 // NextID returns the next free VMID from the cluster.
@@ -103,7 +102,34 @@ func (c *Client) Pools(ctx context.Context) ([]Pool, error) {
 func (c *Client) PoolAddVM(ctx context.Context, poolid string, vmid int) error {
 	form := url.Values{}
 	form.Set("vms", strconv.Itoa(vmid))
-	_, err := c.do(ctx, "PUT", "pools/"+url.PathEscape(poolid),
-		strings.NewReader(form.Encode()), "application/x-www-form-urlencoded")
+	_, err := c.PutForm(ctx, "pools/"+url.PathEscape(poolid), form)
+	return err
+}
+
+// CreatePool creates a resource pool. Pool creation is synchronous in PVE (no
+// UPID task).
+func (c *Client) CreatePool(ctx context.Context, poolid, comment string) error {
+	form := url.Values{}
+	form.Set("poolid", poolid)
+	if comment != "" {
+		form.Set("comment", comment)
+	}
+	_, err := c.PostForm(ctx, "pools", form)
+	return err
+}
+
+// UpdatePoolComment sets a pool's comment. PoolIDs are immutable in PVE; only
+// the comment is updatable.
+func (c *Client) UpdatePoolComment(ctx context.Context, poolid, comment string) error {
+	form := url.Values{}
+	form.Set("comment", comment)
+	_, err := c.PutForm(ctx, "pools/"+url.PathEscape(poolid), form)
+	return err
+}
+
+// DeletePool deletes a resource pool. Pool deletion is synchronous in PVE (no
+// UPID task).
+func (c *Client) DeletePool(ctx context.Context, poolid string) error {
+	_, err := c.Delete(ctx, "pools/"+url.PathEscape(poolid))
 	return err
 }

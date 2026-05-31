@@ -124,6 +124,15 @@ func (c *Client) PostForm(ctx context.Context, path string, form url.Values) (st
 	return dataAsString(data), nil
 }
 
+// PutForm submits a form-encoded PUT and returns the data payload as a string.
+func (c *Client) PutForm(ctx context.Context, path string, form url.Values) (string, error) {
+	data, err := c.do(ctx, http.MethodPut, path, strings.NewReader(form.Encode()), "application/x-www-form-urlencoded")
+	if err != nil {
+		return "", err
+	}
+	return dataAsString(data), nil
+}
+
 // Delete issues a DELETE and returns the data payload as a string (UPID).
 func (c *Client) Delete(ctx context.Context, path string) (string, error) {
 	data, err := c.do(ctx, http.MethodDelete, path, nil, "")

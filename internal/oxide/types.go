@@ -386,6 +386,35 @@ type FloatingIp struct {
 	TimeModified Time    `json:"time_modified"`
 }
 
+// AffinityGroup is a (project-scoped) instance-placement affinity or
+// anti-affinity group. oxidize records these but does not enforce placement
+// (Proxmox owns the scheduler); see internal/store.AffinityGroupStore.
+type AffinityGroup struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	ProjectID     string `json:"project_id"`
+	Policy        string `json:"policy"`         // "allow" | "fail"
+	FailureDomain string `json:"failure_domain"` // "sled"
+	TimeCreated   Time   `json:"time_created"`
+	TimeModified  Time   `json:"time_modified"`
+}
+
+// AffinityGroupMember is a member of an affinity/anti-affinity group. Only the
+// "instance" variant exists; value carries the instance's id, name, and run
+// state.
+type AffinityGroupMember struct {
+	Type  string                   `json:"type"` // always "instance"
+	Value AffinityGroupMemberValue `json:"value"`
+}
+
+// AffinityGroupMemberValue is the instance payload of an AffinityGroupMember.
+type AffinityGroupMemberValue struct {
+	ID       string        `json:"id"`
+	Name     string        `json:"name"`
+	RunState InstanceState `json:"run_state"`
+}
+
 // PrivateIpv4Stack is the v4 portion of a NIC's IP stack.
 type PrivateIpv4Stack struct {
 	IP         string   `json:"ip"`

@@ -48,6 +48,48 @@ func TestSanitizeName(t *testing.T) {
 	}
 }
 
+func TestPoolIDFromName(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"web", "web", true},
+		{"my-project", "my-project", true},
+		{"team_a.1", "team_a.1", true},
+		{"", "", false},
+		{"!!!", "", false},
+		{"foo bar", "foobar", true}, // spaces dropped, not poolid-legal
+	}
+	for _, c := range cases {
+		got, ok := PoolIDFromName(c.in)
+		if got != c.want || ok != c.ok {
+			t.Errorf("PoolIDFromName(%q)=(%q,%v) want (%q,%v)", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestProjectFromPoolRoundTrip(t *testing.T) {
+	// A pool's project id must be stable and distinct from the default project.
+	p := ProjectFromPool("staging", "the staging pool")
+	if p.Name != "staging" {
+		t.Errorf("project name = %q want %q", p.Name, "staging")
+	}
+	if p.Description != "the staging pool" {
+		t.Errorf("project description = %q want %q", p.Description, "the staging pool")
+	}
+	if p.ID != ProjectIDForPool("staging") {
+		t.Errorf("project id = %q want %q", p.ID, ProjectIDForPool("staging"))
+	}
+	if p.ID == ProjectID {
+		t.Errorf("pool project id collided with default project id")
+	}
+	// The default project (empty pool) is the synthetic singleton.
+	if d := ProjectFromPool("", ""); d.ID != ProjectID || d.Name != DefaultProjectName {
+		t.Errorf("default project = %+v want id %q name %q", d, ProjectID, DefaultProjectName)
+	}
+}
+
 func TestParseHumanBytes(t *testing.T) {
 	cases := []struct {
 		in   string

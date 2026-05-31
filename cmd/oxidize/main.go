@@ -71,7 +71,8 @@ func main() {
 		store.NewFloatingIPStore(cfg.DataDir),
 		store.NewIPPoolStore(cfg.DataDir),
 		store.NewSubnetPoolStore(cfg.DataDir),
-		store.NewExternalSubnetStore(cfg.DataDir))
+		store.NewExternalSubnetStore(cfg.DataDir),
+		store.NewAffinityGroupStore(cfg.DataDir))
 	log.Printf("listening on %s, proxying to %s", cfg.Listen, cfg.ProxmoxHost)
 	if err := http.ListenAndServe(cfg.Listen, srv.Handler()); err != nil {
 		log.Fatal(err)

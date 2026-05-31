@@ -47,6 +47,12 @@ func ImageID(volid string) string { return UUIDv5("image:" + volid) }
 // SledID derives a sled UUID from a node name.
 func SledID(node string) string { return UUIDv5("sled:" + node) }
 
+// AffinityGroupID derives an affinity/anti-affinity group UUID from its kind,
+// project id, and name (the tuple that uniquely identifies a group).
+func AffinityGroupID(kind, projectID, name string) string {
+	return UUIDv5(fmt.Sprintf("affinity-group:%s:%s:%s", kind, projectID, name))
+}
+
 var nameSanitize = regexp.MustCompile(`[^a-z0-9-]+`)
 
 // SanitizeName coerces an arbitrary string into a valid Oxide Name: lowercase,
