@@ -106,32 +106,44 @@ func TestOwnedVPCID(t *testing.T) {
 	}
 }
 
-func TestFirewallRulesMatch(t *testing.T) {
-	desired := []translate.PVEGroupRule{
+func TestHashFirewallRules(t *testing.T) {
+	a := []translate.PVEGroupRule{
 		{Type: "in", Action: "ACCEPT", Proto: "tcp", Dport: "22", Source: "10.0.0.0/24", Enable: 1},
 		{Type: "out", Action: "DROP", Proto: "udp", Dport: "53", Enable: 0},
 	}
-	same := []proxmox.FirewallRule{
-		{Type: "in", Action: "ACCEPT", Proto: "tcp", Dport: "22", Source: "10.0.0.0/24", Enable: 1},
-		{Type: "out", Action: "DROP", Proto: "udp", Dport: "53", Enable: 0},
+	if hashFirewallRules(a) != hashFirewallRules(a) {
+		t.Fatal("hash should be stable for identical input")
 	}
-	if !firewallRulesMatch(same, desired) {
-		t.Error("identical rule sets should match")
+	// Order-sensitive (PVE first-match semantics make order significant).
+	swapped := []translate.PVEGroupRule{a[1], a[0]}
+	if hashFirewallRules(a) == hashFirewallRules(swapped) {
+		t.Error("reordered rules should hash differently")
 	}
-	// Order matters.
-	swapped := []proxmox.FirewallRule{same[1], same[0]}
-	if firewallRulesMatch(swapped, desired) {
-		t.Error("reordered rules should not match")
-	}
-	// A single field difference breaks the match.
-	diff := append([]proxmox.FirewallRule(nil), same...)
+	// A single field change changes the hash.
+	diff := append([]translate.PVEGroupRule(nil), a...)
 	diff[0].Dport = "80"
-	if firewallRulesMatch(diff, desired) {
-		t.Error("differing dport should not match")
+	if hashFirewallRules(a) == hashFirewallRules(diff) {
+		t.Error("a changed field should change the hash")
 	}
-	// Length mismatch.
-	if firewallRulesMatch(same[:1], desired) {
-		t.Error("length mismatch should not match")
+}
+
+func TestFirewallGroupInSync(t *testing.T) {
+	h := "deadbeef"
+	cases := []struct {
+		name                    string
+		applied, desired        string
+		liveCount, desiredCount int
+		want                    bool
+	}{
+		{"matched hash and count", h, h, 2, 2, true},
+		{"never applied (empty hash)", "", h, 2, 2, false},
+		{"content changed", "oldhash", h, 2, 2, false},
+		{"drifted: live rule deleted", h, h, 1, 2, false},
+	}
+	for _, c := range cases {
+		if got := firewallGroupInSync(c.applied, c.desired, c.liveCount, c.desiredCount); got != c.want {
+			t.Errorf("%s: firewallGroupInSync = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

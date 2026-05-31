@@ -31,11 +31,18 @@ type Server struct {
 	sdnMu     sync.Mutex
 	sdnCache  *sdnTopo
 	sdnExpiry time.Time
+
+	// Firewall reconciler state (see firewall_reconcile.go). fwMu serializes
+	// reconciles so the periodic loop and the PUT-triggered apply can't race;
+	// fwApplied records the last-applied rule-set hash per VPC so an unchanged
+	// rule set is not rewritten every cycle (churn guard).
+	fwMu      sync.Mutex
+	fwApplied map[string]string
 }
 
 // New builds a Server.
 func New(cfg config.Config, pve *proxmox.Client, keys *store.SSHKeyStore, fips *store.FloatingIPStore, ippools *store.IPPoolStore, subnetpools *store.SubnetPoolStore, extsubnets *store.ExternalSubnetStore, affgroups *store.AffinityGroupStore, fwrules *store.FirewallRuleStore) *Server {
-	return &Server{cfg: cfg, pve: pve, keys: keys, fips: fips, ippools: ippools, subnetpools: subnetpools, extsubnets: extsubnets, affgroups: affgroups, fwrules: fwrules}
+	return &Server{cfg: cfg, pve: pve, keys: keys, fips: fips, ippools: ippools, subnetpools: subnetpools, extsubnets: extsubnets, affgroups: affgroups, fwrules: fwrules, fwApplied: map[string]string{}}
 }
 
 // Handler returns the fully wired http.Handler.

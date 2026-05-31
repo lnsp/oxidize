@@ -137,9 +137,13 @@ periodic goroutine (every FirewallReconcileInterval, default 30s)
       → { group: []PVEGroupRule, ipsets: map[name][]cidr }
    resolver resolves vpc/subnet/instance refs → IPs using the FIP IP machinery
 3. live = read owned (oxidize-tagged) group + ipsets
-4. diff desired vs live; in `on` mode apply the delta:
+4. diff desired vs live; in `on` mode apply the delta (under fwMu, so the loop
+   and a PUT-triggered apply of the same VPC can't race):
       - upsert ipsets + members
-      - replace the group's oxidize rules (delete tagged, recreate in order)
+      - replace the group's oxidize rules (delete tagged, recreate in order),
+        UNLESS the rule set's content hash == the last-applied hash and the live
+        rule count is unchanged (churn guard: compares our own hash, not PVE's
+        echoed fields, while the count check still heals gross drift)
       - for each member VM: ensure firewall enabled, NICs firewall=1, one
         `group` reference rule present (tagged)
       - for VMs no longer members: remove the tagged group reference rule

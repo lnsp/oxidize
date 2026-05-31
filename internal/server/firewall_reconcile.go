@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"log"
 	"net/url"
 	"sort"
@@ -11,7 +14,6 @@ import (
 	"time"
 
 	"github.com/lnsp/oxidize/internal/oxide"
-	"github.com/lnsp/oxidize/internal/proxmox"
 	"github.com/lnsp/oxidize/internal/translate"
 )
 
@@ -82,8 +84,13 @@ func (s *Server) reconcileAllFirewall(ctx context.Context) {
 }
 
 // reconcileVPCFirewall brings one VPC's Proxmox firewall state in line with its
-// stored rule set. An empty rule set tears the VPC's firewall objects down.
+// stored rule set. An empty rule set tears the VPC's firewall objects down. It
+// holds fwMu for the duration so the periodic loop and a PUT-triggered apply of
+// the same VPC can't interleave.
 func (s *Server) reconcileVPCFirewall(ctx context.Context, vpcID string, topo sdnTopo) {
+	s.fwMu.Lock()
+	defer s.fwMu.Unlock()
+
 	rules, err := s.firewallRules(vpcID)
 	if err != nil {
 		log.Printf("firewall: load rules for vpc %s: %v", vpcID, err)
@@ -357,8 +364,14 @@ func (s *Server) applyGroup(ctx context.Context, vpcID, group string, rules []tr
 		log.Printf("firewall: list group %s rules: %v", group, err)
 		return
 	}
-	if firewallRulesMatch(live, rules) {
-		return // already in sync, avoid churn
+	// Churn guard: skip the rewrite when this exact rule set was already applied
+	// and the live rule count still matches. We compare our own content hash
+	// rather than Proxmox's echoed rule fields, so PVE normalizing a field (e.g.
+	// dport/proto formatting) can't force a delete-and-recreate every cycle. The
+	// count check still heals gross drift (e.g. someone deleted the rules).
+	desiredHash := hashFirewallRules(rules)
+	if firewallGroupInSync(s.fwApplied[vpcID], desiredHash, len(live), len(rules)) {
+		return
 	}
 	// Delete highest position first so earlier positions stay valid.
 	for i := len(live) - 1; i >= 0; i-- {
@@ -371,6 +384,7 @@ func (s *Server) applyGroup(ctx context.Context, vpcID, group string, rules []tr
 			log.Printf("firewall: create group %s rule: %v", group, err)
 		}
 	}
+	s.fwApplied[vpcID] = desiredHash
 }
 
 // --- apply: attach group to member VMs ---
@@ -506,6 +520,7 @@ func (s *Server) teardownVPCFirewall(ctx context.Context, vpcID, group string) {
 			}
 		}
 	}
+	delete(s.fwApplied, vpcID)
 }
 
 // sweepOrphanFirewall tears down oxidize-owned groups whose VPC is no longer a
@@ -515,6 +530,8 @@ func (s *Server) sweepOrphanFirewall(ctx context.Context, live map[string]bool) 
 	if s.firewallMode() != firewallModeOn {
 		return
 	}
+	s.fwMu.Lock()
+	defer s.fwMu.Unlock()
 	groups, err := s.pve.FirewallGroups(ctx)
 	if err != nil {
 		return
@@ -570,22 +587,23 @@ func groupRuleForm(r translate.PVEGroupRule) url.Values {
 	return f
 }
 
-// firewallRulesMatch reports whether the live group rules already equal the
-// desired set (same rules in the same order), so a reconcile can skip rewriting.
-func firewallRulesMatch(live []proxmox.FirewallRule, desired []translate.PVEGroupRule) bool {
-	if len(live) != len(desired) {
-		return false
-	}
-	for i := range desired {
-		if liveRuleSig(live[i]) != desiredRuleSig(desired[i]) {
-			return false
-		}
-	}
-	return true
+// firewallGroupInSync reports whether a VPC's security group can be left
+// untouched: the exact rule set was already applied (same content hash) and the
+// live rule count still matches (so it hasn't drifted, e.g. been deleted).
+func firewallGroupInSync(appliedHash, desiredHash string, liveCount, desiredCount int) bool {
+	return appliedHash != "" && appliedHash == desiredHash && liveCount == desiredCount
 }
 
-func liveRuleSig(r proxmox.FirewallRule) string {
-	return strings.Join([]string{r.Type, r.Action, r.Proto, r.Dport, r.Source, r.Dest, strconv.Itoa(r.Enable)}, "|")
+// hashFirewallRules is a stable, order-sensitive content hash of a desired rule
+// set, used as the churn-guard key. It hashes our own canonical signature of
+// each rule, independent of how Proxmox echoes the fields back.
+func hashFirewallRules(rules []translate.PVEGroupRule) string {
+	h := sha1.New()
+	for _, r := range rules {
+		io.WriteString(h, desiredRuleSig(r))
+		io.WriteString(h, "\n")
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func desiredRuleSig(r translate.PVEGroupRule) string {
