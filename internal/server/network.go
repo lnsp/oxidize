@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/lnsp/oxidize/internal/oxide"
 	"github.com/lnsp/oxidize/internal/translate"
@@ -45,11 +46,105 @@ func (s *Server) handleVpcView(w http.ResponseWriter, r *http.Request) {
 	oxide.WriteError(w, http.StatusNotFound, "vpc not found: "+ref)
 }
 
-// handleFirewallRules returns the VPC firewall rules. This endpoint is NOT
-// paginated — it returns a {rules: [...]} object — so it can't use the
-// empty-page catch-all (the console reads data.rules.length).
+// VPC firewall rules are oxidize-owned, store-backed state. Oxide's VPC-scoped
+// firewall model does not map cleanly or safely onto Proxmox's per-VM/cluster
+// firewall, so a VPC's rule set is RECORDED and round-trips to the console (the
+// firewall-rules page is fully functional: edit, save, reload) but is NOT
+// applied to the Proxmox data plane. See internal/store.FirewallRuleStore for
+// the full caveat. This matches the rest of the synthetic VPC surface.
+
+// vpcIDForRef resolves a ?vpc= NameOrId to a synthetic vpc_id: the default VPC's
+// id for the flat LAN, or the zone-derived id for an SDN-backed VPC. It returns
+// ok=false if the ref matches no known VPC.
+func (s *Server) vpcIDForRef(vpcRef string, topo sdnTopo) (string, bool) {
+	dv := translate.SyntheticVPC()
+	if vpcRef == "" || vpcRef == dv.ID || vpcRef == dv.Name {
+		return dv.ID, true
+	}
+	for _, z := range topo.zones {
+		if vpcRef == translate.VPCIDForZone(z.Zone) || vpcRef == translate.SanitizeName(z.Zone, "zone") {
+			return translate.VPCIDForZone(z.Zone), true
+		}
+	}
+	return "", false
+}
+
+// handleFirewallRules returns a VPC's firewall rules from the store. This
+// endpoint is NOT paginated — it returns a {rules: [...]} object — so it can't
+// use the empty-page catch-all (the console reads data.rules.length).
 func (s *Server) handleFirewallRules(w http.ResponseWriter, r *http.Request) {
-	oxide.WriteJSON(w, http.StatusOK, map[string]any{"rules": []any{}})
+	topo := s.sdnTopology(r.Context())
+	vpcID, ok := s.vpcIDForRef(r.URL.Query().Get("vpc"), topo)
+	if !ok {
+		oxide.WriteError(w, http.StatusNotFound, "vpc not found")
+		return
+	}
+	rules, err := s.fwrules.Get(vpcID)
+	if err != nil {
+		oxide.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	oxide.WriteJSON(w, http.StatusOK, map[string]json.RawMessage{"rules": rules})
+}
+
+// handleFirewallRulesUpdate replaces a VPC's entire firewall rule set (Oxide
+// update semantics) and returns the resulting {rules: [...]}. Each rule is
+// assigned a deterministic id (stable for the same vpc+name) plus the VPC id and
+// timestamps; the rules are recorded but not enforced on Proxmox.
+func (s *Server) handleFirewallRulesUpdate(w http.ResponseWriter, r *http.Request) {
+	topo := s.sdnTopology(r.Context())
+	vpcID, ok := s.vpcIDForRef(r.URL.Query().Get("vpc"), topo)
+	if !ok {
+		oxide.WriteError(w, http.StatusNotFound, "vpc not found")
+		return
+	}
+	var body struct {
+		Rules []oxide.VpcFirewallRuleUpdate `json:"rules"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		oxide.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	now := time.Now().UTC()
+	out := make([]oxide.VpcFirewallRule, 0, len(body.Rules))
+	for _, u := range body.Rules {
+		if u.Action != "allow" && u.Action != "deny" {
+			oxide.WriteError(w, http.StatusBadRequest, "action must be allow or deny")
+			return
+		}
+		if u.Direction != "inbound" && u.Direction != "outbound" {
+			oxide.WriteError(w, http.StatusBadRequest, "direction must be inbound or outbound")
+			return
+		}
+		if u.Status != "enabled" && u.Status != "disabled" {
+			oxide.WriteError(w, http.StatusBadRequest, "status must be enabled or disabled")
+			return
+		}
+		out = append(out, oxide.VpcFirewallRule{
+			ID:           translate.FirewallRuleID(vpcID, u.Name),
+			Name:         u.Name,
+			Description:  u.Description,
+			Action:       u.Action,
+			Direction:    u.Direction,
+			Priority:     u.Priority,
+			Status:       u.Status,
+			Filters:      u.Filters,
+			Targets:      u.Targets,
+			VpcID:        vpcID,
+			TimeCreated:  now,
+			TimeModified: now,
+		})
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		oxide.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.fwrules.Replace(vpcID, raw); err != nil {
+		oxide.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	oxide.WriteJSON(w, http.StatusOK, map[string]json.RawMessage{"rules": raw})
 }
 
 // subnetsForVPC returns the subnets of a VPC: the flat LAN subnet for the default

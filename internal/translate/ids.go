@@ -53,6 +53,13 @@ func AffinityGroupID(kind, projectID, name string) string {
 	return UUIDv5(fmt.Sprintf("affinity-group:%s:%s:%s", kind, projectID, name))
 }
 
+// FirewallRuleID derives a VPC firewall rule UUID from its VPC id and name (the
+// pair that uniquely identifies a rule), so a rule keeps a stable id across
+// edits as long as its name is unchanged.
+func FirewallRuleID(vpcID, name string) string {
+	return UUIDv5(fmt.Sprintf("firewall-rule:%s:%s", vpcID, name))
+}
+
 var nameSanitize = regexp.MustCompile(`[^a-z0-9-]+`)
 
 // SanitizeName coerces an arbitrary string into a valid Oxide Name: lowercase,

@@ -25,6 +25,7 @@ type Server struct {
 	subnetpools *store.SubnetPoolStore
 	extsubnets  *store.ExternalSubnetStore
 	affgroups   *store.AffinityGroupStore
+	fwrules     *store.FirewallRuleStore
 
 	// SDN topology cache (see sdnTopology); guarded by sdnMu.
 	sdnMu     sync.Mutex
@@ -33,8 +34,8 @@ type Server struct {
 }
 
 // New builds a Server.
-func New(cfg config.Config, pve *proxmox.Client, keys *store.SSHKeyStore, fips *store.FloatingIPStore, ippools *store.IPPoolStore, subnetpools *store.SubnetPoolStore, extsubnets *store.ExternalSubnetStore, affgroups *store.AffinityGroupStore) *Server {
-	return &Server{cfg: cfg, pve: pve, keys: keys, fips: fips, ippools: ippools, subnetpools: subnetpools, extsubnets: extsubnets, affgroups: affgroups}
+func New(cfg config.Config, pve *proxmox.Client, keys *store.SSHKeyStore, fips *store.FloatingIPStore, ippools *store.IPPoolStore, subnetpools *store.SubnetPoolStore, extsubnets *store.ExternalSubnetStore, affgroups *store.AffinityGroupStore, fwrules *store.FirewallRuleStore) *Server {
+	return &Server{cfg: cfg, pve: pve, keys: keys, fips: fips, ippools: ippools, subnetpools: subnetpools, extsubnets: extsubnets, affgroups: affgroups, fwrules: fwrules}
 }
 
 // Handler returns the fully wired http.Handler.
@@ -91,6 +92,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/vpc-subnets/{subnet}", s.protected(s.handleVpcSubnetView))
 	mux.HandleFunc("DELETE /v1/vpc-subnets/{subnet}", s.protected(s.handleVpcSubnetDelete))
 	mux.HandleFunc("GET /v1/vpc-firewall-rules", s.protected(s.handleFirewallRules))
+	mux.HandleFunc("PUT /v1/vpc-firewall-rules", s.protected(s.handleFirewallRulesUpdate))
 	mux.HandleFunc("GET /v1/ip-pools", s.protected(s.handleIPPoolList))
 	mux.HandleFunc("GET /v1/ip-pools/{pool}", s.protected(s.handleIPPoolView))
 

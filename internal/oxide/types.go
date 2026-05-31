@@ -5,7 +5,10 @@
 // leak surfaces as `undefined` in the UI.
 package oxide
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Time is the timestamp format the API uses (RFC3339). time.Time already
 // marshals to RFC3339, so this is just a readable alias.
@@ -253,6 +256,69 @@ type Vpc struct {
 	SystemRouterID string `json:"system_router_id"`
 	TimeCreated    Time   `json:"time_created"`
 	TimeModified   Time   `json:"time_modified"`
+}
+
+// VpcFirewallRuleTarget selects the instances a firewall rule applies to. It's a
+// tagged union: type is one of vpc|subnet|instance|ip|ip_net and value is the
+// name/IP/CIDR (a string for every variant).
+type VpcFirewallRuleTarget struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
+}
+
+// VpcFirewallRuleHostFilter narrows a rule to the "other end" of the traffic. It
+// has the same shape as a target.
+type VpcFirewallRuleHostFilter struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
+}
+
+// VpcFirewallRuleProtocol is a protocol filter. type is tcp|udp|icmp|icmp6; the
+// icmp variants carry an optional {icmp_type, code} value, kept as raw JSON so
+// the union round-trips without modelling every nested shape.
+type VpcFirewallRuleProtocol struct {
+	Type  string          `json:"type"`
+	Value json.RawMessage `json:"value,omitempty"`
+}
+
+// VpcFirewallRuleFilter reduces the scope of a rule. All three lists are
+// optional (nil = no filter of that kind).
+type VpcFirewallRuleFilter struct {
+	Hosts     []VpcFirewallRuleHostFilter `json:"hosts,omitempty"`
+	Ports     []string                    `json:"ports,omitempty"`
+	Protocols []VpcFirewallRuleProtocol   `json:"protocols,omitempty"`
+}
+
+// VpcFirewallRuleUpdate is a single rule as sent by the client in the
+// vpc_firewall_rules_update body. It has no id/vpc_id/timestamps — those are
+// system-controlled and synthesized server-side into the VpcFirewallRule read
+// shape.
+type VpcFirewallRuleUpdate struct {
+	Name        string                  `json:"name"`
+	Description string                  `json:"description"`
+	Action      string                  `json:"action"`    // allow | deny
+	Direction   string                  `json:"direction"` // inbound | outbound
+	Priority    int                     `json:"priority"`
+	Status      string                  `json:"status"` // enabled | disabled
+	Filters     VpcFirewallRuleFilter   `json:"filters"`
+	Targets     []VpcFirewallRuleTarget `json:"targets"`
+}
+
+// VpcFirewallRule is the read shape returned by the firewall-rules endpoints. It
+// is the update shape plus the system-controlled id/vpc_id/timestamps.
+type VpcFirewallRule struct {
+	ID           string                  `json:"id"`
+	Name         string                  `json:"name"`
+	Description  string                  `json:"description"`
+	Action       string                  `json:"action"`
+	Direction    string                  `json:"direction"`
+	Priority     int                     `json:"priority"`
+	Status       string                  `json:"status"`
+	Filters      VpcFirewallRuleFilter   `json:"filters"`
+	Targets      []VpcFirewallRuleTarget `json:"targets"`
+	VpcID        string                  `json:"vpc_id"`
+	TimeCreated  Time                    `json:"time_created"`
+	TimeModified Time                    `json:"time_modified"`
 }
 
 // VpcSubnet is returned by the subnet endpoints (we synthesize one "default").
