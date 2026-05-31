@@ -206,6 +206,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/system/subnet-pools/{pool}/silos/{silo}", s.protected(s.handleSystemSubnetPoolSiloUnlink))
 	mux.HandleFunc("GET /v1/system/subnet-pools/{pool}/utilization", s.protected(s.handleSystemSubnetPoolUtilization))
 
+	// --- Alert/webhook receivers (mapped to PVE notification webhook endpoints) ---
+	mux.HandleFunc("GET /v1/alert-receivers", s.protected(s.handleAlertReceiverList))
+	mux.HandleFunc("GET /v1/alert-receivers/{receiver}", s.protected(s.handleAlertReceiverView))
+	mux.HandleFunc("DELETE /v1/alert-receivers/{receiver}", s.protected(s.handleAlertReceiverDelete))
+	mux.HandleFunc("GET /v1/alert-receivers/{receiver}/deliveries", s.protected(s.handleAlertDeliveryList))
+	mux.HandleFunc("POST /v1/alert-receivers/{receiver}/probe", s.protected(s.handleAlertReceiverProbe))
+	mux.HandleFunc("POST /v1/alert-receivers/{receiver}/subscriptions", s.protected(s.handleAlertSubscriptionAdd))
+	mux.HandleFunc("DELETE /v1/alert-receivers/{receiver}/subscriptions/{subscription}", s.protected(s.handleAlertSubscriptionRemove))
+	mux.HandleFunc("POST /v1/webhook-receivers", s.protected(s.handleWebhookReceiverCreate))
+	mux.HandleFunc("PUT /v1/webhook-receivers/{receiver}", s.protected(s.handleWebhookReceiverUpdate))
+	mux.HandleFunc("GET /v1/webhook-secrets", s.protected(s.handleWebhookSecretsList))
+	mux.HandleFunc("POST /v1/webhook-secrets", s.protected(s.handleWebhookSecretsAdd))
+	mux.HandleFunc("DELETE /v1/webhook-secrets/{secret_id}", s.protected(s.handleWebhookSecretsDelete))
+
 	// --- System update (read-only: shows the running Proxmox VE version) ---
 	mux.HandleFunc("GET /v1/system/update/status", s.protected(s.handleUpdateStatus))
 	mux.HandleFunc("GET /v1/system/update/repositories", s.protected(s.handleUpdateRepositoryList))

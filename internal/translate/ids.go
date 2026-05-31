@@ -60,6 +60,19 @@ func FirewallRuleID(vpcID, name string) string {
 	return UUIDv5(fmt.Sprintf("firewall-rule:%s:%s", vpcID, name))
 }
 
+// WebhookReceiverID derives an alert/webhook receiver UUID from the backing
+// Proxmox webhook notification endpoint name.
+func WebhookReceiverID(name string) string {
+	return UUIDv5("webhook:" + name)
+}
+
+// WebhookSecretID derives a stable UUID for a webhook secret from the receiver's
+// PVE endpoint name and the secret's (PVE-visible) name. PVE never returns the
+// secret value, so the id is the only stable handle the console gets.
+func WebhookSecretID(receiver, secret string) string {
+	return UUIDv5(fmt.Sprintf("webhook-secret:%s:%s", receiver, secret))
+}
+
 var nameSanitize = regexp.MustCompile(`[^a-z0-9-]+`)
 
 // SanitizeName coerces an arbitrary string into a valid Oxide Name: lowercase,

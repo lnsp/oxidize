@@ -513,6 +513,57 @@ type NetworkInterface struct {
 	TimeModified Time    `json:"time_modified"`
 }
 
+// AlertReceiver is an alert/webhook receiver, mapped onto a Proxmox cluster
+// notification webhook endpoint. Only the webhook kind exists here.
+// subscriptions is always empty (Proxmox has no per-endpoint event-class
+// subscription concept). See internal/server/notifications.go for the mapping.
+type AlertReceiver struct {
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Description   string            `json:"description"`
+	Kind          AlertReceiverKind `json:"kind"`
+	Subscriptions []string          `json:"subscriptions"`
+	TimeCreated   Time              `json:"time_created"`
+	TimeModified  Time              `json:"time_modified"`
+}
+
+// AlertReceiverKind is the webhook-specific configuration of an AlertReceiver
+// (the only kind we map). kind is always "webhook".
+type AlertReceiverKind struct {
+	Kind     string          `json:"kind"` // always "webhook"
+	Endpoint string          `json:"endpoint"`
+	Secrets  []WebhookSecret `json:"secrets"`
+}
+
+// WebhookReceiver is the flattened webhook receiver view returned by the
+// webhook-receiver create/update endpoints (endpoint/secrets inline rather than
+// nested under kind).
+type WebhookReceiver struct {
+	ID            string          `json:"id"`
+	Name          string          `json:"name"`
+	Description   string          `json:"description"`
+	Endpoint      string          `json:"endpoint"`
+	Secrets       []WebhookSecret `json:"secrets"`
+	Subscriptions []string        `json:"subscriptions"`
+	TimeCreated   Time            `json:"time_created"`
+	TimeModified  Time            `json:"time_modified"`
+}
+
+// WebhookSecret is a shared secret key assigned to a webhook receiver. The
+// value is never exposed; the secret is referenced by id (its PVE secret name,
+// hashed to a stable UUID). PVE has no per-secret timestamp, so time_created is
+// a synthesized stable value.
+type WebhookSecret struct {
+	ID          string `json:"id"`
+	TimeCreated Time   `json:"time_created"`
+}
+
+// WebhookSecrets is the {secrets: [...]} list returned by the webhook-secrets
+// endpoints.
+type WebhookSecrets struct {
+	Secrets []WebhookSecret `json:"secrets"`
+}
+
 // SshKey is returned by GET /v1/me/ssh-keys (we return an empty list).
 type SshKey struct {
 	ID           string `json:"id"`
