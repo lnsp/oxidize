@@ -37,6 +37,23 @@ type Config struct {
 
 	// DataDir holds file-backed state with no Proxmox equivalent (SSH keys).
 	DataDir string
+
+	// DefaultSubnet is the Oxide subnet NameOrId a new instance's primary NIC
+	// attaches to when the create request doesn't pick a network explicitly
+	// (the console's "Default" networking option). Empty means the node's first
+	// bridge (the flat vmbr0 LAN). Set to an SDN subnet (e.g. "lab0") to make
+	// that network the default and leave the flat LAN opt-in.
+	DefaultSubnet string
+
+	// FloatingRange is the inclusive address range floating IPs are allocated
+	// from, as "first-last" (e.g. "172.20.10.201-172.20.10.254"). It must sit
+	// inside the SDN subnet but outside its DHCP range. Empty disables floating
+	// IP creation.
+	FloatingRange string
+
+	// InternalToken gates the unauthenticated internal endpoints (the floating
+	// IP -> instance map the takahe reconciler polls). Empty leaves them open.
+	InternalToken string
 }
 
 // LoadTokenFile parses a Proxmox TOKEN file of the form:

@@ -5,6 +5,7 @@ package server
 import (
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/lnsp/oxidize/internal/config"
@@ -16,14 +17,23 @@ import (
 
 // Server holds shared dependencies for the HTTP handlers.
 type Server struct {
-	cfg  config.Config
-	pve  *proxmox.Client
-	keys *store.SSHKeyStore
+	cfg         config.Config
+	pve         *proxmox.Client
+	keys        *store.SSHKeyStore
+	fips        *store.FloatingIPStore
+	ippools     *store.IPPoolStore
+	subnetpools *store.SubnetPoolStore
+	extsubnets  *store.ExternalSubnetStore
+
+	// SDN topology cache (see sdnTopology); guarded by sdnMu.
+	sdnMu     sync.Mutex
+	sdnCache  *sdnTopo
+	sdnExpiry time.Time
 }
 
 // New builds a Server.
-func New(cfg config.Config, pve *proxmox.Client, keys *store.SSHKeyStore) *Server {
-	return &Server{cfg: cfg, pve: pve, keys: keys}
+func New(cfg config.Config, pve *proxmox.Client, keys *store.SSHKeyStore, fips *store.FloatingIPStore, ippools *store.IPPoolStore, subnetpools *store.SubnetPoolStore, extsubnets *store.ExternalSubnetStore) *Server {
+	return &Server{cfg: cfg, pve: pve, keys: keys, fips: fips, ippools: ippools, subnetpools: subnetpools, extsubnets: extsubnets}
 }
 
 // Handler returns the fully wired http.Handler.
@@ -59,6 +69,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/instances/{instance}/disks/attach", s.protected(s.handleDiskAttach))
 	mux.HandleFunc("POST /v1/instances/{instance}/disks/detach", s.protected(s.handleDiskDetach))
 	mux.HandleFunc("GET /v1/instances/{instance}/external-ips", s.protected(s.handleInstanceExternalIPList))
+	mux.HandleFunc("POST /v1/instances/{instance}/external-ips/ephemeral", s.protected(s.handleInstanceEphemeralAttach))
+	mux.HandleFunc("DELETE /v1/instances/{instance}/external-ips/ephemeral", s.protected(s.handleInstanceEphemeralDetach))
 	mux.HandleFunc("GET /v1/instances/{instance}/ssh-public-keys", s.protected(s.emptyPage))
 	mux.HandleFunc("GET /v1/instances/{instance}/affinity-groups", s.protected(s.emptyPage))
 	mux.HandleFunc("GET /v1/instances/{instance}/anti-affinity-groups", s.protected(s.emptyPage))
@@ -71,10 +83,32 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/vpcs", s.protected(s.handleVpcList))
 	mux.HandleFunc("GET /v1/vpcs/{vpc}", s.protected(s.handleVpcView))
 	mux.HandleFunc("GET /v1/vpc-subnets", s.protected(s.handleVpcSubnetList))
+	mux.HandleFunc("POST /v1/vpc-subnets", s.protected(s.handleVpcSubnetCreate))
 	mux.HandleFunc("GET /v1/vpc-subnets/{subnet}", s.protected(s.handleVpcSubnetView))
+	mux.HandleFunc("DELETE /v1/vpc-subnets/{subnet}", s.protected(s.handleVpcSubnetDelete))
 	mux.HandleFunc("GET /v1/vpc-firewall-rules", s.protected(s.handleFirewallRules))
 	mux.HandleFunc("GET /v1/ip-pools", s.protected(s.handleIPPoolList))
 	mux.HandleFunc("GET /v1/ip-pools/{pool}", s.protected(s.handleIPPoolView))
+
+	// --- Floating IPs (reserved SDN addresses, DNAT'd by takahe) ---
+	mux.HandleFunc("GET /v1/floating-ips", s.protected(s.handleFloatingIPList))
+	mux.HandleFunc("POST /v1/floating-ips", s.protected(s.handleFloatingIPCreate))
+	mux.HandleFunc("GET /v1/floating-ips/{floatingIp}", s.protected(s.handleFloatingIPView))
+	mux.HandleFunc("DELETE /v1/floating-ips/{floatingIp}", s.protected(s.handleFloatingIPDelete))
+	mux.HandleFunc("POST /v1/floating-ips/{floatingIp}/attach", s.protected(s.handleFloatingIPAttach))
+	mux.HandleFunc("POST /v1/floating-ips/{floatingIp}/detach", s.protected(s.handleFloatingIPDetach))
+
+	// --- External subnets (routed CIDR blocks allocated from subnet pools) ---
+	mux.HandleFunc("GET /v1/external-subnets", s.protected(s.handleExternalSubnetList))
+	mux.HandleFunc("POST /v1/external-subnets", s.protected(s.handleExternalSubnetCreate))
+	mux.HandleFunc("GET /v1/external-subnets/{externalSubnet}", s.protected(s.handleExternalSubnetView))
+	mux.HandleFunc("DELETE /v1/external-subnets/{externalSubnet}", s.protected(s.handleExternalSubnetDelete))
+	mux.HandleFunc("POST /v1/external-subnets/{externalSubnet}/attach", s.protected(s.handleExternalSubnetAttach))
+	mux.HandleFunc("POST /v1/external-subnets/{externalSubnet}/detach", s.protected(s.handleExternalSubnetDetach))
+
+	// --- Internal: floating IP -> instance map polled by the takahe reconciler.
+	// Token-gated (X-Oxidize-Token), not session-protected (no browser session).
+	mux.HandleFunc("GET /internal/floating-ip-map", s.handleFloatingIPMap)
 
 	// --- Serial console ---
 	mux.HandleFunc("GET /v1/instances/{instance}/serial-console", s.protected(s.handleSerialHistory))
@@ -112,6 +146,37 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/utilization", s.protected(s.handleUtilization))
 	mux.HandleFunc("GET /v1/system/utilization/silos", s.protected(s.handleSiloUtilizationList))
 
+	// --- System: IP pool administration (System -> Networking -> IP Pools) ---
+	mux.HandleFunc("GET /v1/system/ip-pools", s.protected(s.handleSystemIPPoolList))
+	mux.HandleFunc("POST /v1/system/ip-pools", s.protected(s.handleSystemIPPoolCreate))
+	mux.HandleFunc("GET /v1/system/ip-pools/{pool}", s.protected(s.handleSystemIPPoolView))
+	mux.HandleFunc("PUT /v1/system/ip-pools/{pool}", s.protected(s.handleSystemIPPoolUpdate))
+	mux.HandleFunc("DELETE /v1/system/ip-pools/{pool}", s.protected(s.handleSystemIPPoolDelete))
+	mux.HandleFunc("GET /v1/system/ip-pools/{pool}/ranges", s.protected(s.handleSystemIPPoolRangeList))
+	mux.HandleFunc("POST /v1/system/ip-pools/{pool}/ranges/add", s.protected(s.handleSystemIPPoolRangeAdd))
+	mux.HandleFunc("POST /v1/system/ip-pools/{pool}/ranges/remove", s.protected(s.handleSystemIPPoolRangeRemove))
+	mux.HandleFunc("GET /v1/system/ip-pools/{pool}/silos", s.protected(s.handleSystemIPPoolSiloList))
+	mux.HandleFunc("POST /v1/system/ip-pools/{pool}/silos", s.protected(s.handleSystemIPPoolSiloLink))
+	mux.HandleFunc("PUT /v1/system/ip-pools/{pool}/silos/{silo}", s.protected(s.handleSystemIPPoolSiloUpdate))
+	mux.HandleFunc("DELETE /v1/system/ip-pools/{pool}/silos/{silo}", s.protected(s.handleSystemIPPoolSiloUnlink))
+	mux.HandleFunc("GET /v1/system/ip-pools/{pool}/utilization", s.protected(s.handleSystemIPPoolUtilization))
+
+	// --- Subnet pools (silo-scoped + System -> Networking -> Subnet Pools) ---
+	mux.HandleFunc("GET /v1/subnet-pools", s.protected(s.handleSiloSubnetPoolList))
+	mux.HandleFunc("GET /v1/system/subnet-pools", s.protected(s.handleSystemSubnetPoolList))
+	mux.HandleFunc("POST /v1/system/subnet-pools", s.protected(s.handleSystemSubnetPoolCreate))
+	mux.HandleFunc("GET /v1/system/subnet-pools/{pool}", s.protected(s.handleSystemSubnetPoolView))
+	mux.HandleFunc("PUT /v1/system/subnet-pools/{pool}", s.protected(s.handleSystemSubnetPoolUpdate))
+	mux.HandleFunc("DELETE /v1/system/subnet-pools/{pool}", s.protected(s.handleSystemSubnetPoolDelete))
+	mux.HandleFunc("GET /v1/system/subnet-pools/{pool}/members", s.protected(s.handleSystemSubnetPoolMemberList))
+	mux.HandleFunc("POST /v1/system/subnet-pools/{pool}/members/add", s.protected(s.handleSystemSubnetPoolMemberAdd))
+	mux.HandleFunc("POST /v1/system/subnet-pools/{pool}/members/remove", s.protected(s.handleSystemSubnetPoolMemberRemove))
+	mux.HandleFunc("GET /v1/system/subnet-pools/{pool}/silos", s.protected(s.handleSystemSubnetPoolSiloList))
+	mux.HandleFunc("POST /v1/system/subnet-pools/{pool}/silos", s.protected(s.handleSystemSubnetPoolSiloLink))
+	mux.HandleFunc("PUT /v1/system/subnet-pools/{pool}/silos/{silo}", s.protected(s.handleSystemSubnetPoolSiloUpdate))
+	mux.HandleFunc("DELETE /v1/system/subnet-pools/{pool}/silos/{silo}", s.protected(s.handleSystemSubnetPoolSiloUnlink))
+	mux.HandleFunc("GET /v1/system/subnet-pools/{pool}/utilization", s.protected(s.handleSystemSubnetPoolUtilization))
+
 	// --- System update (read-only: shows the running Proxmox VE version) ---
 	mux.HandleFunc("GET /v1/system/update/status", s.protected(s.handleUpdateStatus))
 	mux.HandleFunc("GET /v1/system/update/repositories", s.protected(s.handleUpdateRepositoryList))
@@ -143,11 +208,9 @@ func (s *Server) Handler() http.Handler {
 var emptyListRoutes = []string{
 	"/v1/vpc-routers",
 	"/v1/vpc-router-routes",
-	"/v1/floating-ips",
 	"/v1/internet-gateways",
 	"/v1/affinity-groups",
 	"/v1/anti-affinity-groups",
-	"/v1/system/ip-pools",
 	"/v1/system/networking/address-lot",
 	"/v1/system/networking/loopback-address",
 }

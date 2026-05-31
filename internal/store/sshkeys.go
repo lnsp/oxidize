@@ -3,8 +3,6 @@
 package store
 
 import (
-	"encoding/json"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -25,29 +23,13 @@ func NewSSHKeyStore(dir string) *SSHKeyStore {
 }
 
 func (s *SSHKeyStore) load() ([]oxide.SshKey, error) {
-	b, err := os.ReadFile(s.path)
-	if os.IsNotExist(err) {
-		return []oxide.SshKey{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
 	var keys []oxide.SshKey
-	if err := json.Unmarshal(b, &keys); err != nil {
-		return []oxide.SshKey{}, nil // tolerate a corrupt/empty file
-	}
-	return keys, nil
+	err := readJSON(s.path, &keys)
+	return keys, err
 }
 
 func (s *SSHKeyStore) save(keys []oxide.SshKey) error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(keys, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(s.path, b, 0o600)
+	return writeJSON(s.path, keys)
 }
 
 // List returns all stored keys.

@@ -2,27 +2,47 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/lnsp/oxidize/internal/oxide"
 	"github.com/lnsp/oxidize/internal/translate"
 )
 
-// --- synthetic VPC / subnet / IP pool (so NICs and external IPs resolve) ---
+// --- VPCs / subnets (default = flat vmbr0 LAN; others = Proxmox SDN zones) ---
+
+// vpcsForProject returns the default VPC plus one per SDN zone, scoped to the
+// project. SDN zones are cluster-global, so they appear in every project.
+func (s *Server) vpcsForProject(ctx context.Context, projectRef string, topo sdnTopo) []oxide.Vpc {
+	projectID := s.projectIDFromRef(ctx, projectRef)
+	vpcs := []oxide.Vpc{translate.DefaultVPC(projectID)}
+	for _, z := range topo.zones {
+		vpcs = append(vpcs, translate.VPCFromZone(z.Zone, "", projectID))
+	}
+	return vpcs
+}
 
 func (s *Server) handleVpcList(w http.ResponseWriter, r *http.Request) {
-	oxide.WriteJSON(w, http.StatusOK, oxide.Page([]oxide.Vpc{translate.SyntheticVPC()}))
+	ctx := r.Context()
+	topo := s.sdnTopology(ctx)
+	oxide.WriteJSON(w, http.StatusOK, oxide.Page(s.vpcsForProject(ctx, r.URL.Query().Get("project"), topo)))
 }
 
 func (s *Server) handleVpcView(w http.ResponseWriter, r *http.Request) {
-	v := translate.SyntheticVPC()
-	if ref := r.PathValue("vpc"); ref != v.ID && ref != v.Name {
-		oxide.WriteError(w, http.StatusNotFound, "vpc not found: "+ref)
-		return
+	ctx := r.Context()
+	topo := s.sdnTopology(ctx)
+	ref := r.PathValue("vpc")
+	for _, v := range s.vpcsForProject(ctx, r.URL.Query().Get("project"), topo) {
+		if ref == v.ID || ref == v.Name {
+			oxide.WriteJSON(w, http.StatusOK, v)
+			return
+		}
 	}
-	oxide.WriteJSON(w, http.StatusOK, v)
+	oxide.WriteError(w, http.StatusNotFound, "vpc not found: "+ref)
 }
 
 // handleFirewallRules returns the VPC firewall rules. This endpoint is NOT
@@ -32,41 +52,211 @@ func (s *Server) handleFirewallRules(w http.ResponseWriter, r *http.Request) {
 	oxide.WriteJSON(w, http.StatusOK, map[string]any{"rules": []any{}})
 }
 
+// subnetsForVPC returns the subnets of a VPC: the flat LAN subnet for the default
+// VPC, or one Oxide subnet per vnet for an SDN zone VPC.
+func (s *Server) subnetsForVPC(vpcRef string, topo sdnTopo) []oxide.VpcSubnet {
+	dv := translate.SyntheticVPC()
+	if vpcRef == "" || vpcRef == dv.ID || vpcRef == dv.Name {
+		return []oxide.VpcSubnet{translate.SyntheticSubnet()}
+	}
+	for _, z := range topo.zones {
+		if vpcRef == translate.VPCIDForZone(z.Zone) || vpcRef == translate.SanitizeName(z.Zone, "zone") {
+			var out []oxide.VpcSubnet
+			vpcID := translate.VPCIDForZone(z.Zone)
+			for _, v := range topo.vnetsInZone(z.Zone) {
+				out = append(out, translate.SubnetFromVnet(v.Vnet, topo.cidrOf(v.Vnet), vpcID))
+			}
+			return out
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleVpcSubnetList(w http.ResponseWriter, r *http.Request) {
-	oxide.WriteJSON(w, http.StatusOK, oxide.Page([]oxide.VpcSubnet{translate.SyntheticSubnet()}))
+	topo := s.sdnTopology(r.Context())
+	subnets := s.subnetsForVPC(r.URL.Query().Get("vpc"), topo)
+	oxide.WriteJSON(w, http.StatusOK, oxide.Page(subnets))
 }
 
 func (s *Server) handleVpcSubnetView(w http.ResponseWriter, r *http.Request) {
-	sub := translate.SyntheticSubnet()
-	if ref := r.PathValue("subnet"); ref != sub.ID && ref != sub.Name {
-		oxide.WriteError(w, http.StatusNotFound, "subnet not found: "+ref)
+	ref := r.PathValue("subnet")
+	ds := translate.SyntheticSubnet()
+	if ref == ds.ID || ref == ds.Name {
+		oxide.WriteJSON(w, http.StatusOK, ds)
 		return
 	}
-	oxide.WriteJSON(w, http.StatusOK, sub)
-}
-
-func syntheticIPPool() oxide.IpPool {
-	return oxide.IpPool{
-		ID:           translate.IPPoolID,
-		Name:         "default",
-		Description:  "Proxmox network",
-		TimeCreated:  epochTime(),
-		TimeModified: epochTime(),
+	topo := s.sdnTopology(r.Context())
+	for _, v := range topo.vnets {
+		sub := translate.SubnetFromVnet(v.Vnet, topo.cidrOf(v.Vnet), translate.VPCIDForZone(v.Zone))
+		if ref == sub.ID || ref == sub.Name {
+			oxide.WriteJSON(w, http.StatusOK, sub)
+			return
+		}
 	}
+	oxide.WriteError(w, http.StatusNotFound, "subnet not found: "+ref)
 }
 
-func (s *Server) handleIPPoolList(w http.ResponseWriter, r *http.Request) {
-	oxide.WriteJSON(w, http.StatusOK, oxide.Page([]oxide.IpPool{syntheticIPPool()}))
-}
-
-func (s *Server) handleIPPoolView(w http.ResponseWriter, r *http.Request) {
-	p := syntheticIPPool()
-	if ref := r.PathValue("pool"); ref != p.ID && ref != p.Name {
-		oxide.WriteError(w, http.StatusNotFound, "ip pool not found: "+ref)
+// handleVpcSubnetCreate creates a real SDN vnet+subnet on takahe for the VPC
+// (zone). The subnet is private (snat=1) with a gateway + DHCP, mirroring lab0.
+// Proxmox vnet names are constrained (<=8 chars), so the Oxide subnet name is
+// derived from the vnet name rather than the requested name verbatim.
+func (s *Server) handleVpcSubnetCreate(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	topo := s.sdnTopology(ctx)
+	zone := s.zoneForVPCRef(r.URL.Query().Get("vpc"), topo)
+	if zone == "" {
+		oxide.WriteError(w, http.StatusBadRequest,
+			"subnets can only be created in an SDN-backed VPC, not the default flat LAN")
 		return
 	}
-	oxide.WriteJSON(w, http.StatusOK, p)
+	var body struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		IPv4Block   string `json:"ipv4_block"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		oxide.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	_, ipnet, err := net.ParseCIDR(body.IPv4Block)
+	if err != nil || ipnet.IP.To4() == nil {
+		oxide.WriteError(w, http.StatusBadRequest, "ipv4_block must be a valid IPv4 CIDR")
+		return
+	}
+	gw, dhcpStart, dhcpEnd, ok := subnetGatewayDHCP(ipnet)
+	if !ok {
+		oxide.WriteError(w, http.StatusBadRequest, "subnet is too small to host a gateway + DHCP range")
+		return
+	}
+	vnet := s.vnetNameFor(firstNonEmpty(body.Name, "net"), topo)
+
+	if err := s.pve.SDNCreateVnet(ctx, vnet, zone); err != nil {
+		writeProxmoxError(w, err)
+		return
+	}
+	form := url.Values{}
+	form.Set("type", "subnet")
+	form.Set("subnet", ipnet.String())
+	form.Set("gateway", gw)
+	form.Set("snat", "1")
+	form.Set("dhcp-range", "start-address="+dhcpStart+",end-address="+dhcpEnd)
+	if err := s.pve.SDNCreateSubnet(ctx, vnet, form); err != nil {
+		_ = s.pve.SDNDeleteVnet(ctx, vnet) // roll back the orphan vnet
+		_ = s.pve.SDNApply(ctx)
+		writeProxmoxError(w, err)
+		return
+	}
+	if err := s.pve.SDNApply(ctx); err != nil {
+		writeProxmoxError(w, err)
+		return
+	}
+	s.invalidateSDNTopology()
+	oxide.WriteJSON(w, http.StatusCreated,
+		translate.SubnetFromVnet(vnet, ipnet.String(), translate.VPCIDForZone(zone)))
 }
+
+// handleVpcSubnetDelete removes the SDN vnet (and its subnet) backing a subnet.
+func (s *Server) handleVpcSubnetDelete(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	ref := r.PathValue("subnet")
+	topo := s.sdnTopology(ctx)
+	for _, v := range topo.vnets {
+		if ref == translate.SubnetIDForVnet(v.Vnet) || ref == translate.SanitizeName(v.Vnet, "vnet") || ref == v.Vnet {
+			for _, sub := range topo.subnets[v.Vnet] {
+				_, _ = s.pve.Delete(ctx, "cluster/sdn/vnets/"+v.Vnet+"/subnets/"+sub.Subnet)
+			}
+			if err := s.pve.SDNDeleteVnet(ctx, v.Vnet); err != nil {
+				writeProxmoxError(w, err)
+				return
+			}
+			_ = s.pve.SDNApply(ctx)
+			s.invalidateSDNTopology()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
+	oxide.WriteError(w, http.StatusNotFound, "subnet not found: "+ref)
+}
+
+// zoneForVPCRef resolves a ?vpc= ref to an SDN zone, or "" for the default VPC
+// (the flat LAN, which has no SDN zone).
+func (s *Server) zoneForVPCRef(vpcRef string, topo sdnTopo) string {
+	dv := translate.SyntheticVPC()
+	if vpcRef == "" || vpcRef == dv.ID || vpcRef == dv.Name {
+		return ""
+	}
+	for _, z := range topo.zones {
+		if vpcRef == translate.VPCIDForZone(z.Zone) || vpcRef == translate.SanitizeName(z.Zone, "zone") {
+			return z.Zone
+		}
+	}
+	return ""
+}
+
+// vnetNameFor derives a unique Proxmox vnet name (<=8 chars, alphanumeric,
+// letter-led) from the requested subnet name.
+func (s *Server) vnetNameFor(requested string, topo sdnTopo) string {
+	base := sanitizeVnet(requested)
+	existing := map[string]bool{}
+	for _, v := range topo.vnets {
+		existing[v.Vnet] = true
+	}
+	name := base
+	for i := 0; existing[name]; i++ {
+		suffix := strconv.Itoa(i)
+		trim := 8 - len(suffix)
+		if trim > len(base) {
+			trim = len(base)
+		}
+		name = base[:trim] + suffix
+	}
+	return name
+}
+
+// sanitizeVnet reduces a string to a valid <=8-char vnet/bridge name.
+func sanitizeVnet(in string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(in) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	s := b.String()
+	if s == "" || s[0] < 'a' || s[0] > 'z' {
+		s = "v" + s
+	}
+	if len(s) > 8 {
+		s = s[:8]
+	}
+	return s
+}
+
+// subnetGatewayDHCP computes the gateway (first host) and a DHCP range for a
+// CIDR. Returns ok=false for subnets too small to be useful.
+func subnetGatewayDHCP(ipnet *net.IPNet) (gateway, dhcpStart, dhcpEnd string, ok bool) {
+	netU, valid := ipToU32(ipnet.IP)
+	if !valid {
+		return "", "", "", false
+	}
+	ones, bits := ipnet.Mask.Size()
+	size := uint32(1) << uint(bits-ones)
+	if size < 8 {
+		return "", "", "", false
+	}
+	gw := netU + 1
+	start := netU + 10
+	if size <= 16 {
+		start = netU + 2
+	}
+	end := netU + size - 2 // last usable (size-1 is broadcast)
+	if start > end {
+		start = netU + 2
+	}
+	return u32ToIP(gw), u32ToIP(start), u32ToIP(end), true
+}
+
+// IP pool handlers (handleIPPoolList / handleIPPoolView, silo-scoped) and the
+// system IP pool admin endpoints live in ippools.go.
 
 // --- network interfaces (mapped from Proxmox netN devices) ---
 
@@ -91,9 +281,29 @@ func (s *Server) handleNICList(w http.ResponseWriter, r *http.Request) {
 		writeProxmoxError(w, err)
 		return
 	}
-	macToIP := s.pve.AgentMACtoIPv4(ctx, ref.node, ref.vmid)
-	nics := translate.NICsFromConfig(ref.vmid, cfg, macToIP)
+	macToIP := s.macToIPv4(ctx, ref.node, ref.vmid)
+	loc := s.sdnTopology(ctx).netLocator()
+	nics := translate.NICsFromConfig(ref.vmid, cfg, macToIP, loc)
 	oxide.WriteJSON(w, http.StatusOK, oxide.Page(nics))
+}
+
+// macToIPv4 maps NIC MACs (lowercased) to IPv4 addresses, preferring the live
+// guest-agent view and falling back to Proxmox SDN IPAM. IPAM allocations
+// persist for stopped and agent-less VMs, so an SDN VM's private address still
+// resolves on the Networking tab even when the guest agent can't report it.
+func (s *Server) macToIPv4(ctx context.Context, node string, vmid int) map[string]string {
+	m := s.pve.AgentMACtoIPv4(ctx, node, vmid)
+	if entries, err := s.pve.SDNIPAMStatus(ctx); err == nil {
+		for _, e := range entries {
+			if e.MAC == "" || e.IP == "" {
+				continue
+			}
+			if mac := strings.ToLower(e.MAC); m[mac] == "" {
+				m[mac] = e.IP
+			}
+		}
+	}
+	return m
 }
 
 func (s *Server) handleInstanceExternalIPList(w http.ResponseWriter, r *http.Request) {
@@ -108,13 +318,33 @@ func (s *Server) handleInstanceExternalIPList(w http.ResponseWriter, r *http.Req
 		return
 	}
 	var ips []any
-	for _, ip := range s.pve.AgentIPv4s(ctx, ref.node, ref.vmid) {
-		ips = append(ips, translate.EphemeralExternalIP(ip))
+	// External IPs are only genuinely-allocated external addresses bound to this
+	// instance (floating IPs + explicitly-attached ephemeral IPs from a pool). A
+	// NIC's own address is the interface's *private* IP and belongs to the
+	// network-interface list — it is deliberately NOT echoed here, so a flat-LAN
+	// VM's single LAN address doesn't appear as both a private and an external IP.
+	if fips, err := s.fips.List(); err == nil {
+		for _, f := range fips {
+			if f.InstanceVMID != ref.vmid {
+				continue
+			}
+			if f.Ephemeral {
+				ips = append(ips, map[string]any{"kind": "ephemeral", "ip": f.IP, "ip_pool_id": f.PoolID})
+			} else {
+				ips = append(ips, map[string]any{
+					"kind": "floating", "id": f.ID, "name": f.Name, "description": f.Description,
+					"ip": f.IP, "ip_pool_id": f.PoolID, "instance_id": translate.InstanceID(f.InstanceVMID),
+					"project_id": f.ProjectID, "time_created": f.TimeCreated, "time_modified": f.TimeModified,
+				})
+			}
+		}
 	}
 	oxide.WriteJSON(w, http.StatusOK, oxide.Page(ips))
 }
 
-// handleNICCreate adds a virtio NIC to the VM on the default bridge.
+// handleNICCreate adds a virtio NIC to the VM. The chosen Oxide subnet selects
+// the Proxmox bridge: an SDN-zone subnet attaches to that vnet's bridge, the
+// default subnet attaches to the flat LAN bridge (vmbr0).
 func (s *Server) handleNICCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	ref, err := s.instanceFromQuery(r)
@@ -122,13 +352,22 @@ func (s *Server) handleNICCreate(w http.ResponseWriter, r *http.Request) {
 		oxide.WriteError(w, http.StatusNotFound, "instance not found")
 		return
 	}
+	var body struct {
+		VpcName    string `json:"vpc_name"`
+		SubnetName string `json:"subnet_name"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
 	cfg, err := s.pve.QemuConfig(ctx, ref.node, ref.vmid)
 	if err != nil {
 		writeProxmoxError(w, err)
 		return
 	}
-	dev := nextFreeIndexed(cfg, "net")
+	topo := s.sdnTopology(ctx)
 	bridge := s.firstBridge(ctx, ref.node)
+	if vnet := topo.vnetBridge(body.SubnetName); vnet != "" {
+		bridge = vnet
+	}
+	dev := nextFreeIndexed(cfg, "net")
 	form := url.Values{}
 	form.Set(dev, "virtio,bridge="+bridge)
 	if _, err := s.pve.UpdateConfig(ctx, ref.node, ref.vmid, form); err != nil {
@@ -136,9 +375,9 @@ func (s *Server) handleNICCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	newCfg, _ := s.pve.QemuConfig(ctx, ref.node, ref.vmid)
-	macToIP := s.pve.AgentMACtoIPv4(ctx, ref.node, ref.vmid)
+	macToIP := s.macToIPv4(ctx, ref.node, ref.vmid)
 	oxide.WriteJSON(w, http.StatusCreated,
-		translate.NICFromConfig(ref.vmid, dev, newCfg[dev], macToIP))
+		translate.NICFromConfig(ref.vmid, dev, newCfg[dev], macToIP, topo.netLocator()))
 }
 
 // handleNICDelete removes a NIC device from the VM.
@@ -178,8 +417,9 @@ func (s *Server) handleNICUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg, _ := s.pve.QemuConfig(ctx, ref.node, ref.vmid)
-	macToIP := s.pve.AgentMACtoIPv4(ctx, ref.node, ref.vmid)
-	oxide.WriteJSON(w, http.StatusOK, translate.NICFromConfig(ref.vmid, dev, cfg[dev], macToIP))
+	macToIP := s.macToIPv4(ctx, ref.node, ref.vmid)
+	loc := s.sdnTopology(ctx).netLocator()
+	oxide.WriteJSON(w, http.StatusOK, translate.NICFromConfig(ref.vmid, dev, cfg[dev], macToIP, loc))
 }
 
 // nicDevice resolves a NIC NameOrId to its Proxmox device key (net0, ...).

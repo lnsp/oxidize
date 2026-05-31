@@ -43,6 +43,9 @@ func main() {
 		Username:           config.Env("OXIDIZE_USER", "admin"),
 		Password:           config.Env("OXIDIZE_PASS", "admin"),
 		DataDir:            *dataDir,
+		DefaultSubnet:      config.Env("OXIDIZE_DEFAULT_SUBNET", ""),
+		FloatingRange:      config.Env("OXIDIZE_FLOATING_RANGE", ""),
+		InternalToken:      config.Env("OXIDIZE_INTERNAL_TOKEN", ""),
 	}
 	if secret := os.Getenv("OXIDIZE_SESSION_SECRET"); secret != "" {
 		cfg.SessionSecret = []byte(secret)
@@ -53,6 +56,9 @@ func main() {
 	if cfg.Username == "admin" && cfg.Password == "admin" {
 		log.Print("warning: using default admin/admin login; set OXIDIZE_USER and OXIDIZE_PASS")
 	}
+	if cfg.InternalToken == "" {
+		log.Print("warning: OXIDIZE_INTERNAL_TOKEN not set; /internal/floating-ip-map (instance private IPs) is served unauthenticated")
+	}
 
 	pve := proxmox.New(proxmox.Config{
 		Host:               cfg.ProxmoxHost,
@@ -60,7 +66,12 @@ func main() {
 		InsecureSkipVerify: cfg.InsecureSkipVerify,
 	})
 
-	srv := server.New(cfg, pve, store.NewSSHKeyStore(cfg.DataDir))
+	srv := server.New(cfg, pve,
+		store.NewSSHKeyStore(cfg.DataDir),
+		store.NewFloatingIPStore(cfg.DataDir),
+		store.NewIPPoolStore(cfg.DataDir),
+		store.NewSubnetPoolStore(cfg.DataDir),
+		store.NewExternalSubnetStore(cfg.DataDir))
 	log.Printf("listening on %s, proxying to %s", cfg.Listen, cfg.ProxmoxHost)
 	if err := http.ListenAndServe(cfg.Listen, srv.Handler()); err != nil {
 		log.Fatal(err)

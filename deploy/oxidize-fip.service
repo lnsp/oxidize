@@ -1,0 +1,8 @@
+[Unit]
+Description=Reconcile oxidize floating-IP DNAT rules
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/oxidize-fip-reconcile

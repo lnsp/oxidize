@@ -269,12 +269,121 @@ type VpcSubnet struct {
 }
 
 // IpPool is returned by the IP pool endpoints (we synthesize one "default").
+// The console's floating-IP / ephemeral-IP pickers filter to unicast pools and
+// read ip_version / is_default, so those must be populated or the pool is hidden
+// ("No pools available").
 type IpPool struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	Description  string `json:"description"`
+	IPVersion    string `json:"ip_version"` // "v4" | "v6"
+	PoolType     string `json:"pool_type"`  // "unicast" | "multicast"
+	IsDefault    bool   `json:"is_default"`
 	TimeCreated  Time   `json:"time_created"`
 	TimeModified Time   `json:"time_modified"`
+}
+
+// IpRange is an inclusive address range.
+type IpRange struct {
+	First string `json:"first"`
+	Last  string `json:"last"`
+}
+
+// IpPoolRange is one range belonging to an IP pool.
+type IpPoolRange struct {
+	ID          string  `json:"id"`
+	IPPoolID    string  `json:"ip_pool_id"`
+	Range       IpRange `json:"range"`
+	TimeCreated Time    `json:"time_created"`
+}
+
+// SiloIpPool is an IP pool as seen from a silo (adds is_default for that silo).
+type SiloIpPool struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	IPVersion    string `json:"ip_version"`
+	PoolType     string `json:"pool_type"`
+	IsDefault    bool   `json:"is_default"`
+	TimeCreated  Time   `json:"time_created"`
+	TimeModified Time   `json:"time_modified"`
+}
+
+// IpPoolSiloLink links a pool to a silo.
+type IpPoolSiloLink struct {
+	IPPoolID  string `json:"ip_pool_id"`
+	SiloID    string `json:"silo_id"`
+	IsDefault bool   `json:"is_default"`
+}
+
+// IpPoolUtilization reports address usage for a pool.
+type IpPoolUtilization struct {
+	Capacity  int64 `json:"capacity"`
+	Remaining int64 `json:"remaining"`
+}
+
+// SubnetPool is an admin-managed pool of subnet CIDRs (also serves as the
+// silo-scoped SiloSubnetPool; is_default is ignored by the system list).
+type SubnetPool struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	IPVersion    string `json:"ip_version"`
+	IsDefault    bool   `json:"is_default"`
+	TimeCreated  Time   `json:"time_created"`
+	TimeModified Time   `json:"time_modified"`
+}
+
+// SubnetPoolMember is one CIDR block of a subnet pool.
+type SubnetPoolMember struct {
+	ID              string `json:"id"`
+	Subnet          string `json:"subnet"`
+	MinPrefixLength int    `json:"min_prefix_length"`
+	MaxPrefixLength int    `json:"max_prefix_length"`
+	SubnetPoolID    string `json:"subnet_pool_id"`
+	TimeCreated     Time   `json:"time_created"`
+}
+
+// SubnetPoolSiloLink links a subnet pool to a silo.
+type SubnetPoolSiloLink struct {
+	SubnetPoolID string `json:"subnet_pool_id"`
+	SiloID       string `json:"silo_id"`
+	IsDefault    bool   `json:"is_default"`
+}
+
+// SubnetPoolUtilization reports address usage for a subnet pool.
+type SubnetPoolUtilization struct {
+	Capacity  int64 `json:"capacity"`
+	Remaining int64 `json:"remaining"`
+}
+
+// ExternalSubnet is a routable CIDR allocated from a subnet pool, attachable to
+// an instance (takahe routes the block to it — non-opaque, no NAT).
+type ExternalSubnet struct {
+	ID                 string  `json:"id"`
+	Name               string  `json:"name"`
+	Description        string  `json:"description"`
+	InstanceID         *string `json:"instance_id"`
+	ProjectID          string  `json:"project_id"`
+	Subnet             string  `json:"subnet"`
+	SubnetPoolID       string  `json:"subnet_pool_id"`
+	SubnetPoolMemberID string  `json:"subnet_pool_member_id"`
+	TimeCreated        Time    `json:"time_created"`
+	TimeModified       Time    `json:"time_modified"`
+}
+
+// FloatingIp is a standalone, reassignable address. Backed by a reserved IP in
+// the SDN subnet that takahe DNATs to the attached instance's private IP.
+type FloatingIp struct {
+	ID           string  `json:"id"`
+	Name         string  `json:"name"`
+	Description  string  `json:"description"`
+	IP           string  `json:"ip"`
+	IPPoolID     string  `json:"ip_pool_id"`
+	ProjectID    string  `json:"project_id"`
+	InstanceID   *string `json:"instance_id"`
+	TimeCreated  Time    `json:"time_created"`
+	TimeModified Time    `json:"time_modified"`
 }
 
 // PrivateIpv4Stack is the v4 portion of a NIC's IP stack.

@@ -1,20 +1,50 @@
 package server
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/lnsp/oxidize/internal/oxide"
 	"github.com/lnsp/oxidize/internal/translate"
 )
 
-// projects returns the default project plus one per Proxmox resource pool. When
-// there are no pools this is just the single default "proxmox" project.
+// projects returns one project per Proxmox resource pool, plus the synthetic
+// default "proxmox" project — but only when there are VMs not in any pool, so
+// the fallback project disappears once everything is organized into pools.
 func (s *Server) projects(r *http.Request) []oxide.Project {
-	out := []oxide.Project{translate.ProjectFromPool("", "")}
+	var out []oxide.Project
+	if s.hasUnpooledVMs(r.Context()) {
+		out = append(out, translate.ProjectFromPool("", ""))
+	}
 	for _, p := range s.poolList(r.Context()) {
 		out = append(out, translate.ProjectFromPool(p.PoolID, p.Comment))
 	}
 	return out
+}
+
+// hasUnpooledVMs reports whether any VM is not a member of a resource pool,
+// which is what the default project surfaces.
+func (s *Server) hasUnpooledVMs(ctx context.Context) bool {
+	vms, err := s.listVMs(ctx)
+	if err != nil {
+		// On error, keep the default project so VMs never vanish from the UI.
+		return true
+	}
+	for _, vm := range vms {
+		if vm.Pool == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// projectIDFromRef resolves a ?project= NameOrId to its Oxide project id,
+// defaulting to the default project.
+func (s *Server) projectIDFromRef(ctx context.Context, ref string) string {
+	if pool, scoped := s.projectPool(ctx, ref); scoped && pool != "" {
+		return translate.ProjectIDForPool(pool)
+	}
+	return translate.ProjectID
 }
 
 func (s *Server) handleProjectList(w http.ResponseWriter, r *http.Request) {

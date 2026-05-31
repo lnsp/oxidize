@@ -274,6 +274,8 @@ func (s *Server) handleInstanceDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.pve.PollTask(ctx, ref.node, upid, pveTimeout)
+	// Release ephemeral IPs bound to the VM and detach any floating IPs.
+	s.releaseInstanceFloatingIPs(ref.vmid)
 	w.WriteHeader(http.StatusNoContent)
 }
 

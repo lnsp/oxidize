@@ -1,0 +1,72 @@
+#!/bin/bash
+# Reconcile oxidize's external networking into takahe's data plane:
+#   - floating IPs   -> DNAT rules in the "ip oxidize-fip" nftables table (opaque)
+#   - external subnets -> routes (proto 200) sending each CIDR to its instance (non-opaque)
+#
+# Polls oxidize's internal map endpoint and rewrites both atomically. Runs
+# periodically via oxidize-fip.timer. Leaves state untouched if oxidize is
+# briefly unreachable.
+set -euo pipefail
+
+URL="__URL__"
+TOKEN="__TOKEN__"
+ROUTE_PROTO=200 # isolates our routes: `ip route show proto 200` lists only ours
+
+json=$(curl -fsS -H "X-Oxidize-Token: ${TOKEN}" --max-time 10 "${URL}") || {
+	echo "oxidize-fip: map endpoint unreachable; leaving state unchanged" >&2
+	exit 0
+}
+
+# --- DNAT rules (floating IPs) ---
+rules=$(printf '%s' "${json}" | python3 -c '
+import sys, json, ipaddress
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for m in data.get("dnat", []):
+    fip = m.get("floating_ip"); tgt = m.get("target")
+    if not fip or not tgt:
+        continue
+    ipaddress.IPv4Address(fip); ipaddress.IPv4Address(tgt)
+    print(f"add rule ip oxidize-fip prerouting ip daddr {fip} dnat to {tgt}")
+')
+/usr/sbin/nft -f - <<EOF
+add table ip oxidize-fip
+delete table ip oxidize-fip
+add table ip oxidize-fip
+add chain ip oxidize-fip prerouting { type nat hook prerouting priority dstnat; policy accept; }
+${rules}
+EOF
+
+# --- Routes (external subnets) ---
+# Desired: "<cidr> <via>" lines; reconcile against existing proto-200 routes.
+desired=$(printf '%s' "${json}" | python3 -c '
+import sys, json, ipaddress
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for m in data.get("routes", []):
+    cidr = m.get("cidr"); via = m.get("via")
+    if not cidr or not via:
+        continue
+    ipaddress.ip_network(cidr); ipaddress.IPv4Address(via)
+    print(f"{cidr} {via}")
+')
+
+# Install/refresh desired routes.
+declare -A want=()
+while read -r cidr via; do
+	[ -z "${cidr}" ] && continue
+	want["${cidr}"]=1
+	ip route replace "${cidr}" via "${via}" proto "${ROUTE_PROTO}"
+done <<< "${desired}"
+
+# Remove routes we previously managed (proto 200) that are no longer desired.
+while read -r cidr _rest; do
+	[ -z "${cidr}" ] && continue
+	if [ -z "${want[${cidr}]:-}" ]; then
+		ip route del "${cidr}" proto "${ROUTE_PROTO}" 2>/dev/null || true
+	fi
+done < <(ip -o route show proto "${ROUTE_PROTO}" | awk '{print $1, $0}')

@@ -15,14 +15,82 @@ import (
 // instanceCreateBody is the decoded subset of the Oxide InstanceCreate request.
 // The wire format is snake_case.
 type instanceCreateBody struct {
-	Name        string           `json:"name"`
-	Hostname    string           `json:"hostname"`
-	Description string           `json:"description"`
-	NCPUs       int              `json:"ncpus"`
-	Memory      int64            `json:"memory"`
-	Start       *bool            `json:"start"`
-	BootDisk    *diskAttachBody  `json:"boot_disk"`
-	Disks       []diskAttachBody `json:"disks"`
+	Name              string           `json:"name"`
+	Hostname          string           `json:"hostname"`
+	Description       string           `json:"description"`
+	NCPUs             int              `json:"ncpus"`
+	Memory            int64            `json:"memory"`
+	Start             *bool            `json:"start"`
+	BootDisk          *diskAttachBody  `json:"boot_disk"`
+	Disks             []diskAttachBody `json:"disks"`
+	NetworkInterfaces *nicCreateUnion  `json:"network_interfaces"`
+}
+
+// nicCreateUnion is the InstanceNetworkInterfaceAttachment tagged union:
+// {type:"default"} | {type:"none"} | {type:"create", params:[...]}.
+type nicCreateUnion struct {
+	Type   string `json:"type"`
+	Params []struct {
+		Name       string `json:"name"`
+		VpcName    string `json:"vpc_name"`
+		SubnetName string `json:"subnet_name"`
+	} `json:"params"`
+}
+
+// primaryBridge resolves the bridge the instance's first NIC should attach to
+// from the create request. When the request picks a network explicitly
+// (type=="create"), that subnet's bridge wins. When it doesn't (the console's
+// "Default" option, or nothing), the configured default subnet applies — this
+// is what lets an SDN network be the default and the flat LAN opt-in. Returns
+// "" to mean "leave the template/blank default bridge" (vmbr0).
+func (s *Server) primaryBridge(ctx context.Context, nics *nicCreateUnion) string {
+	if nics != nil {
+		switch nics.Type {
+		case "create":
+			if len(nics.Params) > 0 {
+				return s.sdnTopology(ctx).vnetBridge(nics.Params[0].SubnetName)
+			}
+		case "none":
+			return ""
+		}
+	}
+	if s.cfg.DefaultSubnet != "" {
+		return s.sdnTopology(ctx).vnetBridge(s.cfg.DefaultSubnet)
+	}
+	return ""
+}
+
+// attachExtraNICs adds the second and subsequent requested NICs (net1, net2,
+// ...) as fresh virtio interfaces on each one's subnet bridge. The first NIC is
+// handled as net0 by the create path; a default-subnet NIC uses the flat LAN
+// bridge.
+func (s *Server) attachExtraNICs(ctx context.Context, node string, vmid int, nics *nicCreateUnion) {
+	if nics == nil || nics.Type != "create" || len(nics.Params) < 2 {
+		return
+	}
+	topo := s.sdnTopology(ctx)
+	cfg, err := s.pve.QemuConfig(ctx, node, vmid)
+	if err != nil {
+		return
+	}
+	form := url.Values{}
+	for _, p := range nics.Params[1:] {
+		bridge := topo.vnetBridge(p.SubnetName)
+		if bridge == "" {
+			bridge = s.firstBridge(ctx, node)
+		}
+		dev := nextFreeIndexed(cfg, "net")
+		val := "virtio,bridge=" + bridge
+		cfg[dev] = val // reserve so the next iteration picks a higher index
+		form.Set(dev, val)
+		// Cloud-init only configures NICs that have a matching ipconfigN; without
+		// this the guest leaves the extra interface down (no DHCP lease). The
+		// template's primary NIC already carries ipconfig0.
+		form.Set("ipconfig"+strings.TrimPrefix(dev, "net"), "ip=dhcp")
+	}
+	if len(form) > 0 {
+		_, _ = s.pve.UpdateConfig(ctx, node, vmid, form)
+	}
 }
 
 type diskAttachBody struct {
@@ -79,20 +147,25 @@ func (s *Server) handleInstanceCreate(w http.ResponseWriter, r *http.Request) {
 	// If the boot image is a Proxmox VM template (the normal way to provision
 	// on Proxmox, e.g. a cloud-init template), clone it. Otherwise build a fresh
 	// VM with a blank disk, optionally attaching a chosen ISO as a CD.
+	bridge := s.primaryBridge(ctx, body.NetworkInterfaces)
 	var node string
 	if tmpl := s.resolveTemplate(ctx, translate.ImageRef(params)); tmpl != nil {
 		node = tmpl.node
-		if err := s.createByClone(ctx, tmpl, vmid, params); err != nil {
+		if err := s.createByClone(ctx, tmpl, vmid, params, bridge); err != nil {
 			writeProxmoxError(w, err)
 			return
 		}
 	} else {
-		node, err = s.createBlank(ctx, vmid, params)
+		node, err = s.createBlank(ctx, vmid, params, bridge)
 		if err != nil {
 			writeProxmoxError(w, err)
 			return
 		}
 	}
+
+	// Attach any additional requested NICs (the first maps to net0 above; the
+	// rest become net1, net2, ... each on its subnet's bridge).
+	s.attachExtraNICs(ctx, node, vmid, body.NetworkInterfaces)
 
 	// If created under a pool-backed project, add the VM to that pool so it
 	// lands in the right project.
@@ -112,7 +185,8 @@ func (s *Server) handleInstanceCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 // createBlank provisions a fresh VM with a blank boot disk (and optional ISO).
-func (s *Server) createBlank(ctx context.Context, vmid int, params translate.InstanceCreateParams) (string, error) {
+// bridge selects the NIC's bridge ("" => the node's default bridge).
+func (s *Server) createBlank(ctx context.Context, vmid int, params translate.InstanceCreateParams, bridge string) (string, error) {
 	node, err := s.firstNode(ctx)
 	if err != nil {
 		return "", err
@@ -121,10 +195,13 @@ func (s *Server) createBlank(ctx context.Context, vmid int, params translate.Ins
 	if err != nil {
 		return "", err
 	}
+	if bridge == "" {
+		bridge = s.firstBridge(ctx, node)
+	}
 	opts := translate.QemuCreateOptions{
 		VMID:       vmid,
 		Storage:    storage,
-		Bridge:     s.firstBridge(ctx, node),
+		Bridge:     bridge,
 		BootSizeGB: translate.BootSizeGB(params),
 	}
 	if imgID := translate.ImageRef(params); imgID != "" {
@@ -145,7 +222,7 @@ func (s *Server) createBlank(ctx context.Context, vmid int, params translate.Ins
 // createByClone clones a template to the new VMID, then applies the requested
 // cores/memory/name. Disk size and cloud-init customization are inherited from
 // the template (see limitations noted to the user).
-func (s *Server) createByClone(ctx context.Context, tmpl *vmRef, vmid int, params translate.InstanceCreateParams) error {
+func (s *Server) createByClone(ctx context.Context, tmpl *vmRef, vmid int, params translate.InstanceCreateParams, bridge string) error {
 	name := translate.SanitizeName(firstNonEmpty(params.Name, params.Hostname), "vm-"+strconv.Itoa(vmid))
 	// Linked clone (fast) so we can answer the request promptly; falls back to
 	// full clone if the storage rejects linked clones.
@@ -165,6 +242,15 @@ func (s *Server) createByClone(ctx context.Context, tmpl *vmRef, vmid int, param
 	// Cloud images already run a getty on ttyS0, so this makes the console work
 	// out of the box even if the source template lacks serial0.
 	cfg.Set("serial0", "socket")
+	// Attach the primary NIC to the requested SDN bridge (vnet), preserving the
+	// cloned NIC's model/MAC and just swapping the bridge.
+	if bridge != "" {
+		netval := "virtio,bridge=" + bridge
+		if cur, cerr := s.pve.QemuConfig(ctx, tmpl.node, vmid); cerr == nil {
+			netval = withBridge(cur["net0"], bridge)
+		}
+		cfg.Set("net0", netval)
+	}
 	if params.NCPUs > 0 {
 		cfg.Set("cores", strconv.Itoa(params.NCPUs))
 	}
@@ -214,6 +300,26 @@ func (s *Server) resolveTemplate(ctx context.Context, imageID string) *vmRef {
 		}
 	}
 	return nil
+}
+
+// withBridge rewrites the bridge= token of a Proxmox netN value (or appends one),
+// keeping the model and MAC intact.
+func withBridge(netval, bridge string) string {
+	if netval == "" {
+		return "virtio,bridge=" + bridge
+	}
+	parts := strings.Split(netval, ",")
+	found := false
+	for i, p := range parts {
+		if strings.HasPrefix(p, "bridge=") {
+			parts[i] = "bridge=" + bridge
+			found = true
+		}
+	}
+	if !found {
+		parts = append(parts, "bridge="+bridge)
+	}
+	return strings.Join(parts, ",")
 }
 
 func firstNonEmpty(a, b string) string {
