@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // Config holds everything the server needs to run.
@@ -54,6 +55,16 @@ type Config struct {
 	// InternalToken gates the unauthenticated internal endpoints (the floating
 	// IP -> instance map the takahe reconciler polls). Empty leaves them open.
 	InternalToken string
+
+	// FirewallMode controls VPC firewall enforcement: "off" (default — rules are
+	// recorded but not applied), "dryrun" (log the intended Proxmox security
+	// group/IPset/rule changes without writing), or "on" (apply them). Only
+	// SDN-backed VPCs are enforced; the flat-LAN default VPC stays record-only.
+	FirewallMode string
+
+	// FirewallReconcileInterval is how often the in-process firewall reconciler
+	// re-syncs each VPC's security group with the cluster. Defaults to 30s.
+	FirewallReconcileInterval time.Duration
 }
 
 // LoadTokenFile parses a Proxmox TOKEN file of the form:

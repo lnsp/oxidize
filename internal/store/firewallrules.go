@@ -7,16 +7,15 @@ import (
 )
 
 // FirewallRuleStore persists VPC firewall rule sets as a JSON file, keyed by
-// VPC id.
+// VPC id. It is the DESIRED STATE for firewall enforcement.
 //
-// IMPORTANT: these rules are RECORDED but NOT ENFORCED. Oxide's VPC-scoped
-// firewall model (targets/filters/host-filters, priority, allow|deny,
-// inbound|outbound) does not map cleanly or safely onto Proxmox's per-VM/cluster
-// firewall, and oxidize already treats VPCs as synthetic/SDN-derived. So a VPC's
-// rule set is stored here and round-trips to the console (the firewall-rules page
-// is fully functional: edit, save, reload), but the rules are NOT applied to the
-// Proxmox data plane. This is consistent with the rest of the synthetic VPC
-// surface (subnets, routers).
+// The rules always round-trip to the console (the firewall-rules page is fully
+// functional: edit, save, reload). Whether they are applied to the Proxmox data
+// plane depends on cfg.FirewallMode: "off" (recorded only), or "dryrun"/"on"
+// (the firewall reconciler in internal/server compiles each SDN-backed VPC's
+// rule set into a Proxmox security group + IPsets attached to its member VMs).
+// The flat-LAN default VPC is always record-only. See
+// docs/firewall-enforcement-plan.md and internal/server/firewall_reconcile.go.
 //
 // Each entry holds the rule set as its serialized Oxide read shape
 // ([]oxide.VpcFirewallRule) in Rules, kept as raw JSON so the store stays

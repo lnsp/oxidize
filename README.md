@@ -43,9 +43,10 @@ cleanly; some are synthesized; a few can't map at all (see
 | Hardware inventory: sleds↔nodes, physical disks | ✅ works |
 | System utilization (provisioned totals) | ✅ works (flat — no history) |
 | VPCs / subnets / IP pools | ⚠️ read-only synthetic singletons |
+| VPC firewall rules | ⚠️ recorded; opt-in enforcement on SDN VPCs (`OXIDIZE_FIREWALL_MODE`) |
 | Connect tab | ⚠️ known issue ("unable to find serial interface") |
 | System Update view | ⛔ not implemented yet |
-| Floating IPs, VPC firewall/routers, image upload, silos/RBAC, multi-user auth | ⛔ no clean Proxmox mapping |
+| VPC routers, image upload, silos/RBAC, multi-user auth | ⛔ no clean Proxmox mapping |
 
 ## Requirements
 
@@ -123,8 +124,15 @@ oxidize bridges two systems with different models; the deep mismatches are:
 - **External IPs / floating IPs / IP pools** — Proxmox has no concept of
   allocatable external IPs. A VM just gets bridged onto a network and whatever
   IP the guest obtains. oxidize surfaces the guest-agent-reported IP read-only.
-- **VPC software-defined networking & firewall** — VPC/subnet are read-only
-  synthetic singletons; Proxmox SDN is not used.
+- **VPC software-defined networking** — VPCs map to Proxmox SDN zones (the
+  default VPC is the flat LAN); routers/internet gateways are synthetic.
+- **VPC firewall** — rules are always recorded (the console page round-trips).
+  With `OXIDIZE_FIREWALL_MODE=dryrun|on` an in-process reconciler enforces them
+  on **SDN-backed VPCs** by compiling each VPC's rule set into a Proxmox security
+  group + IPsets attached to its member VMs. The flat-LAN default VPC stays
+  record-only, and there is no implicit default-deny (policy stays ACCEPT, so
+  rules are additive and can't lock you out). See
+  `docs/firewall-enforcement-plan.md`.
 - **Silos / RBAC / multi-user auth** — single synthetic silo + single configured
   login. No users/groups/SAML/quotas.
 - **Snapshots are whole-VM** (Proxmox has no per-disk snapshots).

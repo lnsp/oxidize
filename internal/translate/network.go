@@ -159,6 +159,11 @@ func bridgeOf(val string) string {
 	return b
 }
 
+// BridgeOf returns the Linux bridge a NIC config value attaches to (defaulting
+// to vmbr0 when unspecified), exported for the firewall reconciler to map a VM's
+// NICs onto VPCs.
+func BridgeOf(val string) string { return bridgeOf(val) }
+
 // nicDevices are the Proxmox VM NIC config keys.
 func isNICDevice(key string) bool {
 	return strings.HasPrefix(key, "net") && len(key) > 3 && key[3] >= '0' && key[3] <= '9'

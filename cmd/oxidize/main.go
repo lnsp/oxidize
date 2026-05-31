@@ -2,10 +2,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/lnsp/oxidize/internal/config"
 	"github.com/lnsp/oxidize/internal/proxmox"
@@ -23,11 +25,23 @@ func main() {
 		tokenFile   = flag.String("token-file", config.Env("PROXMOX_TOKEN_FILE", "TOKEN"), "path to the Proxmox API token file")
 		insecure    = flag.Bool("insecure", config.Env("PROXMOX_INSECURE", "true") == "true", "skip TLS verification of the Proxmox host")
 		dataDir     = flag.String("data-dir", config.Env("OXIDIZE_DATA_DIR", "data"), "directory for file-backed state (SSH keys)")
+		fwMode      = flag.String("firewall-mode", config.Env("OXIDIZE_FIREWALL_MODE", "off"), "VPC firewall enforcement: off | dryrun | on")
+		fwInterval  = flag.String("firewall-reconcile-interval", config.Env("OXIDIZE_FIREWALL_RECONCILE_INTERVAL", "30s"), "firewall reconcile interval")
 	)
 	flag.Parse()
 
 	if *proxmoxHost == "" {
 		log.Fatal("missing -proxmox-host (or PROXMOX_HOST)")
+	}
+
+	switch *fwMode {
+	case "off", "dryrun", "on":
+	default:
+		log.Fatalf("invalid -firewall-mode %q (want off, dryrun, or on)", *fwMode)
+	}
+	fwReconcile, err := time.ParseDuration(*fwInterval)
+	if err != nil {
+		log.Fatalf("invalid -firewall-reconcile-interval %q: %v", *fwInterval, err)
 	}
 
 	token, err := config.LoadTokenFile(*tokenFile)
@@ -46,6 +60,9 @@ func main() {
 		DefaultSubnet:      config.Env("OXIDIZE_DEFAULT_SUBNET", ""),
 		FloatingRange:      config.Env("OXIDIZE_FLOATING_RANGE", ""),
 		InternalToken:      config.Env("OXIDIZE_INTERNAL_TOKEN", ""),
+
+		FirewallMode:              *fwMode,
+		FirewallReconcileInterval: fwReconcile,
 	}
 	if secret := os.Getenv("OXIDIZE_SESSION_SECRET"); secret != "" {
 		cfg.SessionSecret = []byte(secret)
@@ -74,6 +91,11 @@ func main() {
 		store.NewExternalSubnetStore(cfg.DataDir),
 		store.NewAffinityGroupStore(cfg.DataDir),
 		store.NewFirewallRuleStore(cfg.DataDir))
+
+	// The firewall reconciler enforces VPC firewall rules on SDN-backed VPCs by
+	// syncing each VPC's Proxmox security group. It is a no-op when off.
+	go srv.StartFirewallReconciler(context.Background())
+
 	log.Printf("listening on %s, proxying to %s", cfg.Listen, cfg.ProxmoxHost)
 	if err := http.ListenAndServe(cfg.Listen, srv.Handler()); err != nil {
 		log.Fatal(err)

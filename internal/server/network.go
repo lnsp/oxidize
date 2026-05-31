@@ -90,7 +90,9 @@ func (s *Server) handleFirewallRules(w http.ResponseWriter, r *http.Request) {
 // handleFirewallRulesUpdate replaces a VPC's entire firewall rule set (Oxide
 // update semantics) and returns the resulting {rules: [...]}. Each rule is
 // assigned a deterministic id (stable for the same vpc+name) plus the VPC id and
-// timestamps; the rules are recorded but not enforced on Proxmox.
+// timestamps. The store is the desired state; when FirewallMode is enabled the
+// rules are enforced on SDN-backed VPCs by reconciling the VPC's Proxmox
+// security group (see firewall_reconcile.go).
 func (s *Server) handleFirewallRulesUpdate(w http.ResponseWriter, r *http.Request) {
 	topo := s.sdnTopology(r.Context())
 	vpcID, ok := s.vpcIDForRef(r.URL.Query().Get("vpc"), topo)
@@ -143,6 +145,11 @@ func (s *Server) handleFirewallRulesUpdate(w http.ResponseWriter, r *http.Reques
 	if err := s.fwrules.Replace(vpcID, raw); err != nil {
 		oxide.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Apply immediately on SDN-backed VPCs (the default flat-LAN VPC is
+	// record-only). No-op unless FirewallMode is dryrun/on.
+	if s.firewallMode() != firewallModeOff && vpcID != translate.VpcID {
+		s.reconcileVPCFirewall(r.Context(), vpcID, topo)
 	}
 	oxide.WriteJSON(w, http.StatusOK, map[string]json.RawMessage{"rules": raw})
 }
