@@ -505,6 +505,15 @@ func (s *Server) teardownVPCFirewall(ctx context.Context, vpcID, group string) {
 	if err == nil {
 		for _, g := range groups {
 			if g.Group == group {
+				// Proxmox refuses to delete a non-empty security group, so clear
+				// its rules first (highest position first to keep positions valid).
+				if rules, err := s.pve.FirewallGroupRules(ctx, group); err == nil {
+					for i := len(rules) - 1; i >= 0; i-- {
+						if err := s.pve.DeleteFirewallGroupRule(ctx, group, rules[i].Pos); err != nil {
+							log.Printf("firewall: clear group %s rule %d: %v", group, rules[i].Pos, err)
+						}
+					}
+				}
 				if err := s.pve.DeleteFirewallGroup(ctx, group); err != nil {
 					log.Printf("firewall: delete group %s: %v", group, err)
 				}
