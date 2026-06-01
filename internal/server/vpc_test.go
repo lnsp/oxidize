@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -9,6 +10,25 @@ import (
 	"github.com/lnsp/oxidize/internal/store"
 	"github.com/lnsp/oxidize/internal/translate"
 )
+
+func TestCIDROverlaps(t *testing.T) {
+	mk := func(s string) *net.IPNet { _, n, _ := net.ParseCIDR(s); return n }
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"172.20.0.0/24", "172.20.0.0/24", true},   // identical
+		{"172.20.0.0/24", "172.20.0.128/25", true}, // contained
+		{"172.20.0.0/24", "172.20.10.0/24", false}, // disjoint
+		{"172.20.0.0/16", "172.20.20.0/24", true},  // wider contains narrower
+		{"10.0.0.0/24", "172.20.0.0/24", false},    // unrelated
+	}
+	for _, c := range cases {
+		if got := cidrOverlaps(mk(c.a), mk(c.b)); got != c.want {
+			t.Errorf("cidrOverlaps(%s, %s) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
 
 func TestZoneNameFor(t *testing.T) {
 	s := &Server{}

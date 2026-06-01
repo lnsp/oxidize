@@ -453,6 +453,25 @@ func (s *Server) handleVpcSubnetCreate(w http.ResponseWriter, r *http.Request) {
 		oxide.WriteError(w, http.StatusBadRequest, "subnet is too small to host a gateway + DHCP range")
 		return
 	}
+	// Reject a block overlapping any existing SDN subnet. Every zone routes
+	// through the same gateway (takahe), so overlapping CIDRs collide there
+	// (ambiguous routes, duplicate gateway IP, IPAM clashes). Proxmox does NOT
+	// prevent this on its own — it will happily register the same CIDR in two
+	// zones — so oxidize guards it.
+	for vn, subs := range topo.subnets {
+		for _, sub := range subs {
+			_, existing, err := net.ParseCIDR(sub.CIDR)
+			if err != nil {
+				continue
+			}
+			if cidrOverlaps(ipnet, existing) {
+				oxide.WriteError(w, http.StatusBadRequest,
+					"subnet "+ipnet.String()+" overlaps existing subnet "+existing.String()+
+						" (vnet "+vn+"); SDN zones share one gateway, so subnet CIDRs must not overlap")
+				return
+			}
+		}
+	}
 	vnet := s.vnetNameFor(firstNonEmpty(body.Name, "net"), topo)
 
 	if err := s.pve.SDNCreateVnet(ctx, vnet, zone); err != nil {
@@ -478,6 +497,13 @@ func (s *Server) handleVpcSubnetCreate(w http.ResponseWriter, r *http.Request) {
 	s.invalidateSDNTopology()
 	oxide.WriteJSON(w, http.StatusCreated,
 		translate.SubnetFromVnet(vnet, ipnet.String(), translate.VPCIDForZone(zone)))
+}
+
+// cidrOverlaps reports whether two IP networks overlap (one contains the other's
+// base address). Used to keep SDN subnets non-overlapping, since all zones route
+// through the same gateway.
+func cidrOverlaps(a, b *net.IPNet) bool {
+	return a.Contains(b.IP) || b.Contains(a.IP)
 }
 
 // handleVpcSubnetDelete removes the SDN vnet (and its subnet) backing a subnet.
