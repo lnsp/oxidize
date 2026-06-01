@@ -66,15 +66,36 @@ func (s *Server) handleVpcList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleVpcView(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	topo := s.sdnTopology(ctx)
 	ref := r.PathValue("vpc")
-	for _, v := range s.vpcsForProject(ctx, r.URL.Query().Get("project"), topo) {
-		if ref == v.ID || ref == v.Name {
-			oxide.WriteJSON(w, http.StatusOK, v)
-			return
-		}
+	if v, ok := s.resolveVPC(ctx, ref, r.URL.Query().Get("project")); ok {
+		oxide.WriteJSON(w, http.StatusOK, v)
+		return
 	}
 	oxide.WriteError(w, http.StatusNotFound, "vpc not found: "+ref)
+}
+
+// resolveVPC resolves a VPC by id/zone/name across ALL VPCs, independent of the
+// project filter — a VPC id is globally unique, and the console fetches a VPC by
+// id (without a ?project=) when resolving an instance's NIC, so a project-scoped
+// VPC must still be viewable by id from any context. The project filter only
+// governs the list (vpcsForProject), not direct lookups. projectRef only supplies
+// the project_id stamped on the global default/legacy VPCs.
+func (s *Server) resolveVPC(ctx context.Context, ref, projectRef string) (oxide.Vpc, bool) {
+	projectID := s.projectIDFromRef(ctx, projectRef)
+	dv := translate.DefaultVPC(projectID)
+	if ref == "" || ref == dv.ID || ref == dv.Name {
+		return dv, true
+	}
+	if rec, ok, _ := s.vpcs.Get(ref); ok {
+		return vpcFromRecord(rec), true
+	}
+	topo := s.sdnTopology(ctx)
+	for _, z := range topo.zones {
+		if ref == translate.VPCIDForZone(z.Zone) || ref == translate.SanitizeName(z.Zone, "zone") {
+			return translate.VPCFromZone(z.Zone, "", projectID), true
+		}
+	}
+	return oxide.Vpc{}, false
 }
 
 // handleVpcCreate creates a project-scoped VPC: a real Proxmox SDN zone (simple,

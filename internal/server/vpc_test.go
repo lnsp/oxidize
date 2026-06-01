@@ -67,3 +67,32 @@ func TestVpcsForProjectScoping(t *testing.T) {
 		t.Error("legacy (un-owned) zone should be visible in every project")
 	}
 }
+
+// A VPC must resolve by id regardless of the requesting project (the console
+// fetches a NIC's VPC by id with no ?project=). Regression test for a 404 that
+// broke instance viewing when the instance's VPC was owned by another project.
+func TestResolveVPCByIDIsGlobal(t *testing.T) {
+	vs := store.NewVPCStore(t.TempDir())
+	now := time.Now()
+	if _, err := vs.Create(store.VPC{
+		ID: translate.VPCIDForZone("test"), Zone: "test",
+		ProjectID: "valar-project", Name: "test", DNSName: "test",
+		TimeCreated: now, TimeModified: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{vpcs: vs}
+	// Empty project (resolves to the default project) must still find a VPC owned
+	// by another project, looked up by id.
+	v, ok := s.resolveVPC(context.Background(), translate.VPCIDForZone("test"), "")
+	if !ok {
+		t.Fatal("VPC owned by another project should resolve by id with empty project")
+	}
+	if v.ProjectID != "valar-project" {
+		t.Errorf("resolved VPC project_id = %q, want the owner's", v.ProjectID)
+	}
+	// Also resolvable by name.
+	if _, ok := s.resolveVPC(context.Background(), "test", ""); !ok {
+		t.Error("VPC should resolve by name too")
+	}
+}
