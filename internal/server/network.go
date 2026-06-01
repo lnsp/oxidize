@@ -11,20 +11,51 @@ import (
 	"time"
 
 	"github.com/lnsp/oxidize/internal/oxide"
+	"github.com/lnsp/oxidize/internal/store"
 	"github.com/lnsp/oxidize/internal/translate"
 )
 
 // --- VPCs / subnets (default = flat vmbr0 LAN; others = Proxmox SDN zones) ---
 
-// vpcsForProject returns the default VPC plus one per SDN zone, scoped to the
-// project. SDN zones are cluster-global, so they appear in every project.
+// vpcsForProject returns the default VPC plus the SDN-zone VPCs visible to the
+// project. A zone with an oxidize VPC record is project-scoped (shown only in
+// its owning project); a zone with no record (created outside oxidize, e.g. the
+// pre-existing "lab" zone) is global and shown in every project.
 func (s *Server) vpcsForProject(ctx context.Context, projectRef string, topo sdnTopo) []oxide.Vpc {
 	projectID := s.projectIDFromRef(ctx, projectRef)
+	owned := map[string]store.VPC{}
+	if all, err := s.vpcs.List(); err == nil {
+		for _, v := range all {
+			owned[v.Zone] = v
+		}
+	}
 	vpcs := []oxide.Vpc{translate.DefaultVPC(projectID)}
 	for _, z := range topo.zones {
+		if rec, ok := owned[z.Zone]; ok {
+			if rec.ProjectID == projectID {
+				vpcs = append(vpcs, vpcFromRecord(rec))
+			}
+			continue
+		}
 		vpcs = append(vpcs, translate.VPCFromZone(z.Zone, "", projectID))
 	}
 	return vpcs
+}
+
+// vpcFromRecord builds the Oxide VPC shape from an oxidize VPC record (its
+// display fields), keeping the stable zone-derived id and system router.
+func vpcFromRecord(v store.VPC) oxide.Vpc {
+	return oxide.Vpc{
+		ID:             v.ID,
+		Name:           v.Name,
+		Description:    v.Description,
+		DNSName:        v.DNSName,
+		IPv6Prefix:     "fd00::/48",
+		ProjectID:      v.ProjectID,
+		SystemRouterID: translate.SystemRouterID,
+		TimeCreated:    v.TimeCreated,
+		TimeModified:   v.TimeModified,
+	}
 }
 
 func (s *Server) handleVpcList(w http.ResponseWriter, r *http.Request) {
@@ -46,6 +77,172 @@ func (s *Server) handleVpcView(w http.ResponseWriter, r *http.Request) {
 	oxide.WriteError(w, http.StatusNotFound, "vpc not found: "+ref)
 }
 
+// handleVpcCreate creates a project-scoped VPC: a real Proxmox SDN zone (simple,
+// IPAM + DHCP, mirroring the lab zone) plus an oxidize record linking the zone to
+// the project with the display name. Subnets are added afterward via the subnet
+// flow. The zone gets a short generated name; the human-readable name lives in
+// the record (zone names are capped at 8 chars).
+func (s *Server) handleVpcCreate(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var body struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		DNSName     string `json:"dns_name"`
+		IPv6Prefix  string `json:"ipv6_prefix"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		oxide.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if body.Name == "" {
+		oxide.WriteError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if body.Name == "default" {
+		oxide.WriteError(w, http.StatusBadRequest, "name is reserved: default")
+		return
+	}
+	projectID := s.projectIDFromRef(ctx, r.URL.Query().Get("project"))
+	topo := s.sdnTopology(ctx)
+	zone := s.zoneNameFor(body.Name, topo)
+
+	form := url.Values{}
+	form.Set("type", "simple")
+	form.Set("ipam", "pve")
+	form.Set("dhcp", "dnsmasq")
+	if err := s.pve.SDNCreateZone(ctx, zone, form); err != nil {
+		writeProxmoxError(w, err)
+		return
+	}
+	if err := s.pve.SDNApply(ctx); err != nil {
+		writeProxmoxError(w, err)
+		return
+	}
+	s.invalidateSDNTopology()
+
+	now := time.Now().UTC()
+	rec, err := s.vpcs.Create(store.VPC{
+		ID:           translate.VPCIDForZone(zone),
+		Zone:         zone,
+		ProjectID:    projectID,
+		Name:         body.Name,
+		Description:  body.Description,
+		DNSName:      firstNonEmpty(body.DNSName, body.Name),
+		TimeCreated:  now,
+		TimeModified: now,
+	})
+	if err != nil {
+		// Roll back the orphan zone so a duplicate name doesn't leave SDN litter.
+		_ = s.pve.SDNDeleteZone(ctx, zone)
+		_ = s.pve.SDNApply(ctx)
+		s.invalidateSDNTopology()
+		if err == store.ErrVPCNameTaken {
+			oxide.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		oxide.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	oxide.WriteJSON(w, http.StatusCreated, vpcFromRecord(rec))
+}
+
+// handleVpcUpdate renames/redescribes an oxidize-created VPC (the display fields
+// in the record; the zone name itself is immutable). The default and legacy
+// (un-owned) zones are read-only.
+func (s *Server) handleVpcUpdate(w http.ResponseWriter, r *http.Request) {
+	ref := r.PathValue("vpc")
+	rec, ok, err := s.vpcs.Get(ref)
+	if err != nil {
+		oxide.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		oxide.WriteError(w, http.StatusBadRequest, "only oxidize-created VPCs can be updated")
+		return
+	}
+	var body struct {
+		Name        *string `json:"name"`
+		Description *string `json:"description"`
+		DNSName     *string `json:"dns_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		oxide.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	updated, ok, err := s.vpcs.Update(rec.ID, body.Name, body.Description, body.DNSName, time.Now().UTC())
+	if err != nil {
+		if err == store.ErrVPCNameTaken {
+			oxide.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		oxide.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		oxide.WriteError(w, http.StatusNotFound, "vpc not found: "+ref)
+		return
+	}
+	oxide.WriteJSON(w, http.StatusOK, vpcFromRecord(updated))
+}
+
+// handleVpcDelete deletes an oxidize-created VPC: its SDN zone and the record.
+// Refused for the default/legacy VPCs and for a VPC that still has subnets
+// (delete those first, so member VMs aren't orphaned).
+func (s *Server) handleVpcDelete(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	ref := r.PathValue("vpc")
+	rec, ok, err := s.vpcs.Get(ref)
+	if err != nil {
+		oxide.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		oxide.WriteError(w, http.StatusBadRequest, "only oxidize-created VPCs can be deleted")
+		return
+	}
+	topo := s.sdnTopology(ctx)
+	for _, v := range topo.vnets {
+		if v.Zone == rec.Zone {
+			oxide.WriteError(w, http.StatusBadRequest, "VPC is not empty: delete its subnets first")
+			return
+		}
+	}
+	if err := s.pve.SDNDeleteZone(ctx, rec.Zone); err != nil {
+		writeProxmoxError(w, err)
+		return
+	}
+	if err := s.pve.SDNApply(ctx); err != nil {
+		writeProxmoxError(w, err)
+		return
+	}
+	s.invalidateSDNTopology()
+	if _, err := s.vpcs.Delete(rec.ID); err != nil {
+		oxide.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// zoneNameFor derives a unique Proxmox SDN zone name (<=8 chars, alphanumeric,
+// letter-led) from a requested VPC name, mirroring vnetNameFor.
+func (s *Server) zoneNameFor(requested string, topo sdnTopo) string {
+	base := sanitizeVnet(requested)
+	existing := map[string]bool{}
+	for _, z := range topo.zones {
+		existing[z.Zone] = true
+	}
+	name := base
+	for i := 0; existing[name]; i++ {
+		suffix := strconv.Itoa(i)
+		trim := 8 - len(suffix)
+		if trim > len(base) {
+			trim = len(base)
+		}
+		name = base[:trim] + suffix
+	}
+	return name
+}
+
 // VPC firewall rules are oxidize-owned, store-backed state. Oxide's VPC-scoped
 // firewall model does not map cleanly or safely onto Proxmox's per-VM/cluster
 // firewall, so a VPC's rule set is RECORDED and round-trips to the console (the
@@ -60,6 +257,11 @@ func (s *Server) vpcIDForRef(vpcRef string, topo sdnTopo) (string, bool) {
 	dv := translate.SyntheticVPC()
 	if vpcRef == "" || vpcRef == dv.ID || vpcRef == dv.Name {
 		return dv.ID, true
+	}
+	// An oxidize-created VPC may be referenced by its display name, which differs
+	// from the zone token, so consult the store first.
+	if rec, ok, _ := s.vpcs.Get(vpcRef); ok {
+		return rec.ID, true
 	}
 	for _, z := range topo.zones {
 		if vpcRef == translate.VPCIDForZone(z.Zone) || vpcRef == translate.SanitizeName(z.Zone, "zone") {
@@ -286,6 +488,11 @@ func (s *Server) zoneForVPCRef(vpcRef string, topo sdnTopo) string {
 	dv := translate.SyntheticVPC()
 	if vpcRef == "" || vpcRef == dv.ID || vpcRef == dv.Name {
 		return ""
+	}
+	// An oxidize-created VPC may be referenced by its display name; resolve via
+	// the store first, falling back to the zone token/id for legacy zones.
+	if rec, ok, _ := s.vpcs.Get(vpcRef); ok {
+		return rec.Zone
 	}
 	for _, z := range topo.zones {
 		if vpcRef == translate.VPCIDForZone(z.Zone) || vpcRef == translate.SanitizeName(z.Zone, "zone") {

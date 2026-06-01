@@ -26,6 +26,7 @@ type Server struct {
 	extsubnets  *store.ExternalSubnetStore
 	affgroups   *store.AffinityGroupStore
 	fwrules     *store.FirewallRuleStore
+	vpcs        *store.VPCStore
 
 	// SDN topology cache (see sdnTopology); guarded by sdnMu.
 	sdnMu     sync.Mutex
@@ -41,8 +42,8 @@ type Server struct {
 }
 
 // New builds a Server.
-func New(cfg config.Config, pve *proxmox.Client, keys *store.SSHKeyStore, fips *store.FloatingIPStore, ippools *store.IPPoolStore, subnetpools *store.SubnetPoolStore, extsubnets *store.ExternalSubnetStore, affgroups *store.AffinityGroupStore, fwrules *store.FirewallRuleStore) *Server {
-	return &Server{cfg: cfg, pve: pve, keys: keys, fips: fips, ippools: ippools, subnetpools: subnetpools, extsubnets: extsubnets, affgroups: affgroups, fwrules: fwrules, fwApplied: map[string]string{}}
+func New(cfg config.Config, pve *proxmox.Client, keys *store.SSHKeyStore, fips *store.FloatingIPStore, ippools *store.IPPoolStore, subnetpools *store.SubnetPoolStore, extsubnets *store.ExternalSubnetStore, affgroups *store.AffinityGroupStore, fwrules *store.FirewallRuleStore, vpcs *store.VPCStore) *Server {
+	return &Server{cfg: cfg, pve: pve, keys: keys, fips: fips, ippools: ippools, subnetpools: subnetpools, extsubnets: extsubnets, affgroups: affgroups, fwrules: fwrules, vpcs: vpcs, fwApplied: map[string]string{}}
 }
 
 // Handler returns the fully wired http.Handler.
@@ -93,7 +94,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/network-interfaces/{interface}", s.protected(s.handleNICUpdate))
 	mux.HandleFunc("DELETE /v1/network-interfaces/{interface}", s.protected(s.handleNICDelete))
 	mux.HandleFunc("GET /v1/vpcs", s.protected(s.handleVpcList))
+	mux.HandleFunc("POST /v1/vpcs", s.protected(s.handleVpcCreate))
 	mux.HandleFunc("GET /v1/vpcs/{vpc}", s.protected(s.handleVpcView))
+	mux.HandleFunc("PUT /v1/vpcs/{vpc}", s.protected(s.handleVpcUpdate))
+	mux.HandleFunc("DELETE /v1/vpcs/{vpc}", s.protected(s.handleVpcDelete))
 	mux.HandleFunc("GET /v1/vpc-subnets", s.protected(s.handleVpcSubnetList))
 	mux.HandleFunc("POST /v1/vpc-subnets", s.protected(s.handleVpcSubnetCreate))
 	mux.HandleFunc("GET /v1/vpc-subnets/{subnet}", s.protected(s.handleVpcSubnetView))

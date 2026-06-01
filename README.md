@@ -42,7 +42,8 @@ cleanly; some are synthesized; a few can't map at all (see
 | Projects (from Proxmox **resource pools**, default project otherwise) | ✅ works |
 | Hardware inventory: sleds↔nodes, physical disks | ✅ works |
 | System utilization (provisioned totals) | ✅ works (flat — no history) |
-| VPCs / subnets / IP pools | ⚠️ read-only synthetic singletons |
+| VPCs (project-scoped, create/rename/delete) → Proxmox SDN zones | ✅ works (legacy zones stay global) |
+| Subnets / IP pools | ⚠️ subnets map to SDN vnets; IP pools synthetic |
 | VPC firewall rules | ⚠️ recorded; opt-in enforcement on SDN VPCs (`OXIDIZE_FIREWALL_MODE`) |
 | Connect tab | ⚠️ known issue ("unable to find serial interface") |
 | System Update view | ⛔ not implemented yet |

@@ -58,6 +58,21 @@ func (c *Client) SDNSubnets(ctx context.Context, vnet string) ([]SDNSubnet, erro
 	return out, nil
 }
 
+// SDNCreateZone stages a new SDN zone (pending until SDNApply). The form carries
+// the zone type and its options (e.g. type=simple, ipam=pve, dhcp=dnsmasq).
+func (c *Client) SDNCreateZone(ctx context.Context, zone string, form url.Values) error {
+	form.Set("zone", zone)
+	_, err := c.PostForm(ctx, "cluster/sdn/zones", form)
+	return err
+}
+
+// SDNDeleteZone removes an SDN zone (pending until SDNApply). The zone must have
+// no vnets.
+func (c *Client) SDNDeleteZone(ctx context.Context, zone string) error {
+	_, err := c.Delete(ctx, "cluster/sdn/zones/"+zone)
+	return err
+}
+
 // SDNCreateVnet stages a new VNet in a zone (pending until SDNApply).
 func (c *Client) SDNCreateVnet(ctx context.Context, vnet, zone string) error {
 	form := url.Values{}

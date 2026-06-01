@@ -90,7 +90,8 @@ func main() {
 		store.NewSubnetPoolStore(cfg.DataDir),
 		store.NewExternalSubnetStore(cfg.DataDir),
 		store.NewAffinityGroupStore(cfg.DataDir),
-		store.NewFirewallRuleStore(cfg.DataDir))
+		store.NewFirewallRuleStore(cfg.DataDir),
+		store.NewVPCStore(cfg.DataDir))
 
 	// The firewall reconciler enforces VPC firewall rules on SDN-backed VPCs by
 	// syncing each VPC's Proxmox security group. It is a no-op when off.
