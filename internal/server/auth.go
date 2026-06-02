@@ -26,12 +26,27 @@ const (
 // client-side redirect to /login, which drives the auth flow.
 func (s *Server) protected(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.validSession(r) {
+		if !s.validSession(r) && !s.validBearer(r) {
 			oxide.WriteError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
 		next(w, r)
 	}
+}
+
+// validBearer reports whether the request carries an "Authorization: Bearer
+// <token>" header matching the configured static API token. This is the auth
+// path used by the Oxide CLI/SDK (pure bearer-token clients). It is disabled
+// when no API token is configured, so an empty header never authenticates.
+func (s *Server) validBearer(r *http.Request) bool {
+	if s.cfg.APIToken == "" {
+		return false
+	}
+	tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(tok), []byte(s.cfg.APIToken)) == 1
 }
 
 type credentials struct {

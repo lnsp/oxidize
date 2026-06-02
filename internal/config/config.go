@@ -56,6 +56,14 @@ type Config struct {
 	// IP -> instance map the takahe reconciler polls). Empty leaves them open.
 	InternalToken string
 
+	// APIToken, if set, is a static bearer token accepted on `/v1/*` requests
+	// via the `Authorization: Bearer <token>` header, in addition to the
+	// browser session cookie. This lets the Oxide CLI/SDK (which are pure
+	// bearer-token clients) drive oxidize: point them at this host with a
+	// hand-written ~/.config/oxide/credentials.toml carrying this token. Empty
+	// disables bearer auth (UI-only).
+	APIToken string
+
 	// FirewallMode controls VPC firewall enforcement: "off" (default — rules are
 	// recorded but not applied), "dryrun" (log the intended Proxmox security
 	// group/IPset/rule changes without writing), or "on" (apply them). Only

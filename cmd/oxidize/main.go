@@ -60,6 +60,7 @@ func main() {
 		DefaultSubnet:      config.Env("OXIDIZE_DEFAULT_SUBNET", ""),
 		FloatingRange:      config.Env("OXIDIZE_FLOATING_RANGE", ""),
 		InternalToken:      config.Env("OXIDIZE_INTERNAL_TOKEN", ""),
+		APIToken:           config.Env("OXIDIZE_API_TOKEN", ""),
 
 		FirewallMode:              *fwMode,
 		FirewallReconcileInterval: fwReconcile,
@@ -75,6 +76,9 @@ func main() {
 	}
 	if cfg.InternalToken == "" {
 		log.Print("warning: OXIDIZE_INTERNAL_TOKEN not set; /internal/floating-ip-map (instance private IPs) is served unauthenticated")
+	}
+	if cfg.APIToken != "" {
+		log.Print("OXIDIZE_API_TOKEN set; accepting bearer-token auth on /v1/* (Oxide CLI/SDK)")
 	}
 
 	pve := proxmox.New(proxmox.Config{
