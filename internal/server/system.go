@@ -22,6 +22,12 @@ func syntheticSilo() oxide.Silo {
 	}
 }
 
+// handlePing answers the unauthenticated health check (`oxide ping`). The
+// spec's Ping schema is a single required "status" enum that is always "ok".
+func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
+	oxide.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (s *Server) handleRackList(w http.ResponseWriter, r *http.Request) {
 	rack := oxide.Rack{ID: translate.RackID, TimeCreated: epochTime(), TimeModified: epochTime()}
 	oxide.WriteJSON(w, http.StatusOK, oxide.Page([]oxide.Rack{rack}))

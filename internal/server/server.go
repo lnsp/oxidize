@@ -54,6 +54,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/login/{silo}/local", s.handleLogin)
 	mux.HandleFunc("POST /v1/logout", s.handleLogout)
 
+	// --- Health check (unauthenticated, per spec) ---
+	mux.HandleFunc("GET /v1/ping", s.handlePing)
+
 	// --- Current user ---
 	mux.HandleFunc("GET /v1/me", s.protected(s.handleMe))
 	mux.HandleFunc("GET /v1/me/groups", s.protected(s.handleMeGroups))
