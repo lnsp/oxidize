@@ -11,6 +11,7 @@
 /console/
 /omicron/
 /pve-apiclient/
+/oxide.rs/
 
 # Dev artifacts
 /.playwright-mcp/
