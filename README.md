@@ -32,6 +32,7 @@ cleanly; some are synthesized; a few can't map at all (see
 | Area | Status |
 |---|---|
 | Login (single configured user) | ✅ works |
+| [Oxide CLI / SDK](#using-the-oxide-cli) via bearer token | ✅ works (no `oxide auth login` device flow) |
 | Instances: list / detail / create (incl. **clone from template**) / start / stop / reboot / delete / resize | ✅ works |
 | Disks: list / create / attach / detach / delete | ✅ works |
 | Images: list (ISOs + VM templates) / delete | ✅ works (no upload) |
@@ -93,6 +94,43 @@ Flags (or environment variables):
 | `--data-dir` | `OXIDIZE_DATA_DIR` | `data` | File-backed state (SSH keys) |
 | | `OXIDIZE_USER` / `OXIDIZE_PASS` | `admin`/`admin` | Console login |
 | | `OXIDIZE_SESSION_SECRET` | random | HMAC key for the session cookie |
+| | `OXIDIZE_API_TOKEN` | — | Static bearer token for the [Oxide CLI/SDK](#using-the-oxide-cli); unset disables bearer auth (UI only) |
+
+## Using the Oxide CLI
+
+oxidize works with the upstream [`oxide` CLI](https://github.com/oxidecomputer/oxide.rs)
+(and SDK), which are pure bearer-token clients. Set `OXIDIZE_API_TOKEN` on the
+server to a secret of your choosing, then point the CLI at oxidize with that
+same token. Any `/v1/*` request carrying `Authorization: Bearer <token>` is
+authenticated, alongside the browser's session cookie.
+
+The quickest way is environment variables:
+
+```sh
+export OXIDE_HOST="https://your-oxidize-host"
+export OXIDE_TOKEN="<the OXIDIZE_API_TOKEN you set on the server>"
+oxide ping            # unauthenticated health check
+oxide project list
+oxide instance list --project <project>
+```
+
+For a persistent default profile (no env vars), write `~/.config/oxide/credentials.toml`
+(mode `600`) and `~/.config/oxide/config.toml`:
+
+```toml
+# ~/.config/oxide/credentials.toml
+[profile.proxmox]
+host  = "https://your-oxidize-host"
+token = "<the OXIDIZE_API_TOKEN you set on the server>"
+user  = "00000000-0000-0000-0000-000000000000"   # any UUID; oxidize doesn't validate it
+
+# ~/.config/oxide/config.toml
+default-profile = "proxmox"
+```
+
+> `oxide auth login` is **not** supported — it needs the OAuth 2.0 device
+> authorization flow (`/device/auth`, `/device/token`), which oxidize doesn't
+> implement. Configure the token directly as above instead.
 
 ## Deployment
 
