@@ -25,9 +25,10 @@ func (s *Server) handleSerialHistory(w http.ResponseWriter, r *http.Request) {
 
 // handleSerialStream bridges the Console's serial-console websocket to Proxmox's
 // termproxy + vncwebsocket. It is not wrapped by protected() because it is a
-// websocket upgrade; the session cookie is checked manually here.
+// websocket upgrade; auth (session cookie or bearer token) is checked manually
+// here rather than via protected().
 func (s *Server) handleSerialStream(w http.ResponseWriter, r *http.Request) {
-	if !s.validSession(r) {
+	if !s.validSession(r) && !s.validBearer(r) {
 		oxide.WriteError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
